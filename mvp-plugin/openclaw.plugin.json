@@ -1,0 +1,10 @@
+{
+  "id": "clawcraft",
+  "name": "ClawCraft",
+  "description": "RTS-style graphical interface for OpenClaw agent monitoring and operations",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

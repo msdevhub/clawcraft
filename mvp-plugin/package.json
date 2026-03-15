@@ -1,0 +1,22 @@
+{
+  "name": "clawcraft",
+  "version": "0.5.0",
+  "description": "ClawCraft — RTS-style graphical interface for OpenClaw agent monitoring and operations",
+  "main": "index.ts",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "clawcraft",
+    "rts",
+    "monitoring",
+    "visualization"
+  ],
+  "devDependencies": {
+    "@types/node": "^25.5.0"
+  }
+}
