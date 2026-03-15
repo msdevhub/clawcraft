@@ -279,7 +279,6 @@ export function ActivityPanel({ open, onClose }: ActivityPanelProps) {
         <FileEditor
           agentId={editorTarget.agentId}
           initialFile={editorTarget.name}
-          initialPath={editorTarget.path}
           onClose={() => setEditorTarget(null)}
         />
       ) : null}

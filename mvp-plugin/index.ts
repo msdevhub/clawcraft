@@ -2638,6 +2638,86 @@ async function actionSessionReset(params: any): Promise<ActionResult> {
 // Plugin Definition
 // ============================================================================
 
+// ── Activity & Workspace Files handlers ──
+
+function handleActivity(req: IncomingMessage, res: ServerResponse): boolean {
+  if (req.method === 'OPTIONS') { corsOptions(res); return true; }
+  if (req.method !== 'GET') { jsonResponse(res, 405, { ok: false, error: 'Method not allowed' }); return true; }
+
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const agentId = url.searchParams.get('agentId') || undefined;
+  const sinceParam = url.searchParams.get('since');
+  const limitParam = url.searchParams.get('limit');
+  const since = sinceParam ? parseInt(sinceParam, 10) : Date.now() - 24 * 60 * 60 * 1000;
+  const limit = limitParam ? Math.min(parseInt(limitParam, 10), 200) : 50;
+
+  const filtered = activityEvents
+    .filter((e) => e.timestamp >= since && (!agentId || e.agentId === agentId))
+    .slice(0, limit);
+
+  const stats = getActivityStats(agentId);
+
+  jsonResponse(res, 200, { ok: true, events: filtered, stats });
+  return true;
+}
+
+function handleWorkspaceFiles(req: IncomingMessage, res: ServerResponse): boolean {
+  if (req.method === 'OPTIONS') { corsOptions(res); return true; }
+  if (req.method !== 'GET') { jsonResponse(res, 405, { ok: false, error: 'Method not allowed' }); return true; }
+
+  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const agentId = url.searchParams.get('agentId') || 'main';
+
+  (async () => {
+    try {
+      const { homedir } = await import('node:os');
+      const { readdir, stat } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      const homeDir = homedir();
+
+      const config = cachedConfig || await readConfigFile();
+      const agentList = Array.isArray(config?.agents?.list) ? config.agents.list : [];
+      const agent = agentList.find((a: any) => (a.id || a.name) === agentId);
+      const workspacePath = agent?.workspace || join(homeDir, '.openclaw', `workspace-${agentId}`);
+
+      const entries: WorkspaceFileEntry[] = [];
+
+      // Scan workspace root files + key subdirs
+      const scanDirs = ['', 'projects', 'skills', 'memory', '.learnings'];
+      for (const subdir of scanDirs) {
+        const dirPath = join(workspacePath, subdir);
+        try {
+          const items = await readdir(dirPath);
+          for (const item of items) {
+            if (item.startsWith('.') || item === 'node_modules') continue;
+            const fullPath = join(dirPath, item);
+            try {
+              const st = await stat(fullPath);
+              if (!st.isFile()) continue;
+              entries.push({
+                name: item,
+                path: subdir ? `${subdir}/${item}` : item,
+                size: st.size,
+                mtime: st.mtimeMs,
+                agentId,
+                type: classifyWorkspaceFile(item),
+              });
+            } catch { /* skip */ }
+          }
+        } catch { /* dir doesn't exist, skip */ }
+      }
+
+      // Sort by mtime desc
+      entries.sort((a, b) => b.mtime - a.mtime);
+      jsonResponse(res, 200, { ok: true, files: entries.slice(0, 100) });
+    } catch (err: any) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+  })();
+
+  return true;
+}
+
 const clawcraftPlugin = {
   id: "clawcraft",
   name: "ClawCraft",
@@ -2755,9 +2835,11 @@ const clawcraftPlugin = {
     api.registerHttpRoute({ path: "/clawcraft/files",   auth: "plugin", handler: handleFiles,   match: "exact" });
     api.registerHttpRoute({ path: "/clawcraft/memory",  auth: "plugin", handler: handleMemory,  match: "exact" });
     api.registerHttpRoute({ path: "/clawcraft/skills",  auth: "plugin", handler: handleSkills,  match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/activity", auth: "plugin", handler: handleActivity, match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/workspace-files", auth: "plugin", handler: handleWorkspaceFiles, match: "exact" });
 
     runtimeApi = api;
-    log.info?.(`[clawcraft] Plugin registered — 9 routes, 9 hooks 🏰 v${VERSION}`);
+    log.info?.(`[clawcraft] Plugin registered — 11 routes, 9 hooks 🏰 v${VERSION}`);
   },
 };
 
