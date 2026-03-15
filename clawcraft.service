@@ -1,0 +1,15 @@
+[Unit]
+Description=ClawCraft Visual Dashboard
+After=network.target openclaw-gateway.service
+
+[Service]
+Type=simple
+User=resley
+WorkingDirectory=/home/resley/clawcraft
+ExecStart=/usr/bin/node clawcraft-server.js
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/resley
+
+[Install]
+WantedBy=multi-user.target
