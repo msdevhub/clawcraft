@@ -62,6 +62,7 @@ export default function App() {
   const selectEntity = useWorldStore((s) => s.selectEntity);
   const chatDrawerOpen = useWorldStore((s) => s.chatDrawerOpen);
   const setChatDrawerOpen = useWorldStore((s) => s.setChatDrawerOpen);
+  const requestChatFocus = useWorldStore((s) => s.requestChatFocus);
   const activityPanelOpen = useWorldStore((s) => s.activityPanelOpen);
   const setActivityPanelOpen = useWorldStore((s) => s.setActivityPanelOpen);
   const agentIds = Object.keys(agents).sort();
@@ -163,6 +164,22 @@ export default function App() {
       delete (window as any).__entityClick;
     };
   }, [handleBuildingClick, handleEntityClick]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        const nextOpen = !useWorldStore.getState().chatDrawerOpen;
+        setChatDrawerOpen(nextOpen);
+        if (nextOpen) {
+          window.setTimeout(() => requestChatFocus(), 0);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [requestChatFocus, setChatDrawerOpen]);
 
   // Click on empty area to close everything
   const handleWorldClick = useCallback((e: React.MouseEvent) => {

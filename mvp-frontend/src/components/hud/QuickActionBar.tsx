@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useWorldStore } from '@/store/world-store';
 
 interface QuickActionBarProps {
   onOpenGateway: () => void;
@@ -33,6 +34,7 @@ export function QuickActionBar({
 }: QuickActionBarProps) {
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const agentActivity = useWorldStore((state) => state.agentActivity);
 
   useEffect(() => {
     if (!showMenu) {
@@ -117,6 +119,7 @@ export function QuickActionBar({
                         key={agentId}
                         icon="🏛️"
                         label={agentId}
+                        indicator={getAgentIndicator(agentActivity[agentId]?.status ?? 'idle')}
                         onClick={() => openItem(() => onOpenAgent(agentId))}
                       />
                     ))
@@ -198,14 +201,48 @@ function MenuSection({ title, items }: { title: string; items: MenuItem[] }) {
   );
 }
 
-function MenuButton({ icon, label, onClick }: { icon: string; label: string; onClick: () => void }) {
+function getAgentIndicator(status: 'idle' | 'thinking' | 'tooling') {
+  if (status === 'tooling') {
+    return {
+      className: 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.45)] animate-pulse',
+      title: '工具调用中',
+    };
+  }
+
+  if (status === 'thinking') {
+    return {
+      className: 'bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.4)] animate-pulse',
+      title: '思考中',
+    };
+  }
+
+  return {
+    className: 'bg-slate-600',
+    title: '空闲',
+  };
+}
+
+function MenuButton({
+  icon,
+  label,
+  onClick,
+  indicator,
+}: {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  indicator?: { className: string; title: string };
+}) {
   return (
     <button
       onClick={onClick}
       className="flex flex-col items-center gap-0.5 rounded-xl border border-slate-800/80 bg-slate-900/60 px-2 py-2 text-slate-300 transition-all hover:border-slate-500 hover:bg-slate-700/90 hover:text-slate-100"
       title={label}
     >
-      <span className="text-base leading-none">{icon}</span>
+      <span className="relative text-base leading-none">
+        {icon}
+        {indicator ? <span className={`absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border border-slate-950 ${indicator.className}`} title={indicator.title} /> : null}
+      </span>
       <span className="max-w-full truncate text-[9px] leading-none">{label}</span>
     </button>
   );

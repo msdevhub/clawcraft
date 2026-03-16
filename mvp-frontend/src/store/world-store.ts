@@ -38,6 +38,11 @@ export interface WorldStore {
   chatSessionKey: string | null;
   chatMessages: ChatMessage[];
   chatLoading: boolean;
+  chatStreamingText: string;
+  chatError: string | null;
+  chatStreamController: AbortController | null;
+  chatFocusNonce: number;
+  agentActivity: Record<string, { status: 'idle' | 'thinking' | 'tooling'; since: number }>;
   muted: boolean;
   resetWorld: () => void;
   setFullState: (state: WorldState) => void;
@@ -52,6 +57,10 @@ export interface WorldStore {
   setReconnectAttempt: (attempt: number) => void;
   sendMessage: (message: string) => Promise<void>;
   loadChatHistory: (sessionKey: string) => Promise<void>;
+  abortChatStream: () => void;
+  startNewChatSession: () => void;
+  setChatSessionKey: (sessionKey: string | null) => void;
+  requestChatFocus: () => void;
   toggleMuted: () => void;
   chatDrawerOpen: boolean;
   activityPanelOpen: boolean;
@@ -82,6 +91,11 @@ const initialState = {
   chatSessionKey: null,
   chatMessages: [] as ChatMessage[],
   chatLoading: false,
+  chatStreamingText: '',
+  chatError: null as string | null,
+  chatStreamController: null as AbortController | null,
+  chatFocusNonce: 0,
+  agentActivity: {} as Record<string, { status: 'idle' | 'thinking' | 'tooling'; since: number }>,
   muted: false,
   chatDrawerOpen: false,
   activityPanelOpen: false,
@@ -208,6 +222,96 @@ function resolveChatSessionForAgent(agentId: string, state: Pick<WorldStore, 'ag
   return resolveChatSession(agentId, 'agent', state);
 }
 
+function normalizeAgentActivityStatus(status: SessionState['status'] | undefined): 'idle' | 'thinking' | 'tooling' {
+  if (status === 'tooling') {
+    return 'tooling';
+  }
+
+  if (status === 'thinking' || status === 'responding' || status === 'blocked') {
+    return 'thinking';
+  }
+
+  return 'idle';
+}
+
+function getAgentActivityPriority(status: 'idle' | 'thinking' | 'tooling') {
+  if (status === 'tooling') {
+    return 2;
+  }
+
+  if (status === 'thinking') {
+    return 1;
+  }
+
+  return 0;
+}
+
+function deriveAgentActivity(
+  agents: Record<string, AgentState>,
+  sessions: Record<string, SessionState>,
+  previous: WorldStore['agentActivity'] = {},
+) {
+  const now = Date.now();
+  const agentIds = new Set<string>([
+    ...Object.keys(agents),
+    ...Object.values(sessions).map((session) => session.agentId),
+    ...Object.keys(previous),
+  ]);
+
+  const next: WorldStore['agentActivity'] = {};
+  for (const agentId of agentIds) {
+    const previousEntry = previous[agentId];
+    next[agentId] = {
+      status: 'idle',
+      since: previousEntry?.status === 'idle' ? previousEntry.since : now,
+    };
+  }
+
+  for (const session of Object.values(sessions)) {
+    const agentId = session.agentId;
+    const normalizedStatus = normalizeAgentActivityStatus(session.status);
+    const current = next[agentId] ?? { status: 'idle', since: now };
+    const currentPriority = getAgentActivityPriority(current.status);
+    const nextPriority = getAgentActivityPriority(normalizedStatus);
+    const since = session.lastActivityTs || now;
+
+    if (nextPriority > currentPriority) {
+      next[agentId] = { status: normalizedStatus, since };
+      continue;
+    }
+
+    if (nextPriority === currentPriority && normalizedStatus !== 'idle') {
+      next[agentId] = {
+        status: normalizedStatus,
+        since: Math.min(current.since, since),
+      };
+    }
+  }
+
+  for (const [agentId, entry] of Object.entries(next)) {
+    const previousEntry = previous[agentId];
+    if (!previousEntry) {
+      continue;
+    }
+
+    if (previousEntry.status === entry.status) {
+      next[agentId] = { ...entry, since: previousEntry.since };
+    }
+  }
+
+  return next;
+}
+
+function replaceMessageSessionKey(messages: ChatMessage[], fromSessionKey: string, toSessionKey: string) {
+  if (!fromSessionKey || fromSessionKey === toSessionKey) {
+    return messages;
+  }
+
+  return messages.map((message) =>
+    message.sessionKey === fromSessionKey ? { ...message, sessionKey: toSessionKey } : message,
+  );
+}
+
 export const useWorldStore = create<WorldStore>((set, get) => ({
   ...initialState,
   resetWorld: () =>
@@ -255,6 +359,7 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
                   sessions: state.sessions ?? {},
                 },
               ),
+        agentActivity: deriveAgentActivity(state.agents ?? {}, state.sessions ?? {}, current.agentActivity),
       };
     }),
   applyDelta: (delta) =>
@@ -343,6 +448,7 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
         incidents: nextIncidents,
         recentEvents,
         chatSessionKey: nextChatSessionKey,
+        agentActivity: deriveAgentActivity(nextAgents, nextSessions, state.agentActivity),
       };
     }),
   selectEntity: (id, type, options) =>
@@ -403,18 +509,32 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
       return;
     }
 
+    const sentAt = Date.now();
+    const pendingSessionKey = chatSessionKey ?? `pending:${chatTargetAgent}:${sentAt}`;
+    const clientMessageId = `local-user-${sentAt}`;
+    const clientTimestamp = sentAt;
+    const controller = new AbortController();
+
     const optimisticMessage: ChatMessage = {
-      id: `local-${Date.now()}`,
-      sessionKey: chatSessionKey ?? `pending:${chatTargetAgent}`,
+      id: clientMessageId,
+      sessionKey: pendingSessionKey,
       role: 'user',
       content: trimmed,
-      timestamp: Date.now(),
+      timestamp: clientTimestamp,
     };
 
     set((state) => ({
       chatLoading: true,
+      chatStreamingText: '',
+      chatError: null,
+      chatStreamController: controller,
       chatMessages: dedupeMessages([...state.chatMessages, optimisticMessage]),
     }));
+
+    let activeSessionKey = pendingSessionKey;
+    let assistantMessageId = `stream-assistant-${sentAt}`;
+    let assistantTimestamp = sentAt;
+    let streamingText = '';
 
     try {
       const response = await fetch('/clawcraft/chat/send', {
@@ -422,11 +542,14 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: controller.signal,
         body: JSON.stringify({
           sessionKey: chatSessionKey,
           agentId: chatTargetAgent,
           message: trimmed,
-          stream: false,
+          stream: true,
+          clientMessageId,
+          clientTimestamp,
         }),
       });
 
@@ -434,42 +557,184 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
         throw new Error(`Failed to send message (${response.status})`);
       }
 
-      const payload = await response.json();
-      if (!payload.ok) {
-        throw new Error(payload.error || 'Failed to send chat message');
+      if (!response.body) {
+        throw new Error('Streaming response is unavailable');
       }
 
-      if (typeof payload.sessionKey === 'string' && payload.sessionKey) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const applySessionMetadata = (sessionKey: string) => {
+        if (!sessionKey || sessionKey === activeSessionKey) {
+          return;
+        }
+
+        const previousSessionKey = activeSessionKey;
+        activeSessionKey = sessionKey;
+
         set((state) => ({
-          chatSessionKey: payload.sessionKey,
-          chatTargetAgent,
-          chatMessages: state.chatSessionKey
-            ? state.chatMessages
-            : state.chatMessages.map((entry) =>
-                entry.sessionKey === `pending:${chatTargetAgent}`
-                  ? { ...entry, sessionKey: payload.sessionKey }
-                  : entry,
-              ),
+          chatSessionKey: sessionKey,
+          chatMessages: replaceMessageSessionKey(state.chatMessages, previousSessionKey, sessionKey),
         }));
+      };
+
+      const finalizeStreamingMessage = (content: string) => {
+        const finalContent = content.trimEnd();
+        set((state) => {
+          const nextMessagesBase = activeSessionKey.startsWith('pending:')
+            ? state.chatMessages
+            : replaceMessageSessionKey(state.chatMessages, pendingSessionKey, activeSessionKey);
+
+          const nextMessages = finalContent
+            ? dedupeMessages([
+                ...nextMessagesBase,
+                {
+                  id: assistantMessageId,
+                  sessionKey: activeSessionKey,
+                  role: 'assistant',
+                  content: finalContent,
+                  timestamp: assistantTimestamp,
+                },
+              ])
+            : nextMessagesBase;
+
+          return {
+            chatLoading: false,
+            chatStreamingText: '',
+            chatError: null,
+            chatStreamController: null,
+            chatSessionKey: activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey,
+            chatMessages: nextMessages,
+          };
+        });
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data:')) {
+            continue;
+          }
+
+          const data = line.slice(5).trimStart();
+          if (!data) {
+            continue;
+          }
+
+          if (data === '[DONE]') {
+            finalizeStreamingMessage(streamingText);
+            return;
+          }
+
+          try {
+            const payload = JSON.parse(data);
+
+            if (payload?.error) {
+              throw new Error(String(payload.error));
+            }
+
+            if (typeof payload?.sessionKey === 'string' && payload.sessionKey) {
+              applySessionMetadata(payload.sessionKey);
+            }
+
+            if (typeof payload?.assistantMessageId === 'string' && payload.assistantMessageId) {
+              assistantMessageId = payload.assistantMessageId;
+            }
+
+            if (typeof payload?.assistantTimestamp === 'number' && Number.isFinite(payload.assistantTimestamp)) {
+              assistantTimestamp = payload.assistantTimestamp;
+            }
+
+            const delta =
+              typeof payload?.content === 'string'
+                ? payload.content
+                : typeof payload?.choices?.[0]?.delta?.content === 'string'
+                  ? payload.choices[0].delta.content
+                  : '';
+
+            if (!delta) {
+              continue;
+            }
+
+            streamingText += delta;
+            set((state) => ({
+              chatStreamingText: streamingText,
+              chatError: null,
+              chatSessionKey: activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey,
+            }));
+          } catch (error) {
+            if (error instanceof Error) {
+              throw error;
+            }
+          }
+        }
+
+        if (done) {
+          if (buffer.trim() === 'data: [DONE]' || streamingText) {
+            finalizeStreamingMessage(streamingText);
+            return;
+          }
+
+          throw new Error('Streaming response ended unexpectedly');
+        }
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        set((state) => {
+          const nextMessagesBase = activeSessionKey.startsWith('pending:')
+            ? state.chatMessages
+            : replaceMessageSessionKey(state.chatMessages, pendingSessionKey, activeSessionKey);
+
+          const nextMessages = streamingText.trim()
+            ? dedupeMessages([
+                ...nextMessagesBase,
+                {
+                  id: assistantMessageId,
+                  sessionKey: activeSessionKey,
+                  role: 'assistant',
+                  content: streamingText.trimEnd(),
+                  timestamp: assistantTimestamp,
+                },
+              ])
+            : nextMessagesBase;
+
+          return {
+            chatLoading: false,
+            chatStreamingText: '',
+            chatError: null,
+            chatStreamController: null,
+            chatSessionKey: activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey,
+            chatMessages: nextMessages,
+          };
+        });
+        return;
+      }
+
       const messageText = error instanceof Error ? error.message : 'Failed to send chat message';
       const event = makeEvent({
         type: 'error',
         message: messageText,
         ts: Date.now(),
-        sessionKey: chatSessionKey,
+        sessionKey: activeSessionKey.startsWith('pending:') ? chatSessionKey ?? undefined : activeSessionKey,
       });
       soundManager.play('error');
       set((state) => ({
+        chatLoading: false,
+        chatStreamingText: '',
+        chatError: messageText,
+        chatStreamController: null,
         recentEvents: [event, ...state.recentEvents].slice(0, 5),
       }));
-    } finally {
-      set({ chatLoading: false });
     }
   },
   loadChatHistory: async (sessionKey) => {
-    set({ chatLoading: true, chatSessionKey: sessionKey });
+    set({ chatLoading: true, chatStreamingText: '', chatError: null, chatSessionKey: sessionKey });
 
     try {
       const response = await fetch(`/clawcraft/chat/${encodeURIComponent(sessionKey)}/history`);
@@ -489,7 +754,7 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
           }))
         : [];
 
-      set({ chatMessages: dedupeMessages(messages), chatLoading: false });
+      set({ chatMessages: dedupeMessages(messages), chatLoading: false, chatError: null });
     } catch (error) {
       const messageText = error instanceof Error ? error.message : 'Failed to load chat history';
       const event = makeEvent({
@@ -501,10 +766,35 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
       soundManager.play('error');
       set((state) => ({
         chatLoading: false,
+        chatError: messageText,
         recentEvents: [event, ...state.recentEvents].slice(0, 5),
       }));
     }
   },
+  abortChatStream: () => {
+    get().chatStreamController?.abort();
+  },
+  startNewChatSession: () => {
+    get().chatStreamController?.abort();
+    set({
+      chatLoading: false,
+      chatStreamingText: '',
+      chatError: null,
+      chatStreamController: null,
+      chatSessionKey: null,
+      chatMessages: [],
+      chatDrawerOpen: true,
+    });
+  },
+  setChatSessionKey: (sessionKey) =>
+    set({
+      chatSessionKey: sessionKey,
+      chatMessages: [],
+      chatStreamingText: '',
+      chatError: null,
+      chatDrawerOpen: true,
+    }),
+  requestChatFocus: () => set({ chatFocusNonce: Date.now() }),
   toggleMuted: () =>
     set((state) => {
       const nextMuted = !state.muted;
@@ -514,12 +804,18 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
   setChatDrawerOpen: (chatDrawerOpen) => set({ chatDrawerOpen }),
   setActivityPanelOpen: (activityPanelOpen) => set({ activityPanelOpen }),
   setChatTargetAgent: (agentId) =>
-    set((state) => ({
-      chatTargetAgent: agentId,
-      chatSessionKey: resolveChatSessionForAgent(agentId, state),
-      chatMessages: [],
-      chatDrawerOpen: true,
-    })),
+    set((state) => {
+      state.chatStreamController?.abort();
+      return {
+        chatTargetAgent: agentId,
+        chatSessionKey: resolveChatSessionForAgent(agentId, state),
+        chatMessages: [],
+        chatStreamingText: '',
+        chatError: null,
+        chatStreamController: null,
+        chatDrawerOpen: true,
+      };
+    }),
 }));
 
 // Expose store globally for debugging / browser automation
@@ -528,14 +824,22 @@ if (typeof window !== 'undefined') {
 }
 
 function dedupeMessages(messages: ChatMessage[]) {
-  const seen = new Set<string>();
+  const seenIds = new Set<string>();
+  const seenFallback = new Set<string>();
 
   return messages.filter((message) => {
-    const key = `${message.id}:${message.role}:${message.content}:${message.timestamp}`;
-    if (seen.has(key)) {
+    if (message.id) {
+      if (seenIds.has(message.id)) {
+        return false;
+      }
+      seenIds.add(message.id);
+    }
+
+    const fallbackKey = `${message.sessionKey}:${message.role}:${message.toolName ?? ''}:${message.content}:${message.timestamp}`;
+    if (seenFallback.has(fallbackKey)) {
       return false;
     }
-    seen.add(key);
+    seenFallback.add(fallbackKey);
     return true;
   });
 }

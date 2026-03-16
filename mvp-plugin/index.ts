@@ -686,6 +686,11 @@ let cachedBuildings: KingdomBuilding[] = [];
 let buildingsLastRefresh = 0;
 const BUILDINGS_REFRESH_MS = 30_000; // Refresh buildings every 30s
 let activityEvents: ActivityEvent[] = [];
+const RECENT_WORKSPACE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const WORKSPACE_SCAN_MAX_DEPTH = 5;
+const WORKSPACE_SCAN_MAX_RESULTS = 200;
+const WORKSPACE_SCAN_DIR_SKIP = new Set(['node_modules', '.git', '.next', '.turbo', 'dist', 'build', 'coverage']);
+const WORKSPACE_SCAN_HIDDEN_DIR_ALLOWLIST = new Set(['.learnings']);
 
 function recordActivity(event: Omit<ActivityEvent, 'id'>) {
   activityEvents = [
@@ -729,10 +734,233 @@ function getActivityStats(agentId?: string) {
 }
 
 function classifyWorkspaceFile(name: string): WorkspaceFileEntry['type'] {
-  if (/\.(ts|tsx|js|jsx|py|go|rs|java|c|cc|cpp|mjs|cjs)$/i.test(name)) return 'code';
-  if (/\.(md|txt|rst)$/i.test(name)) return 'doc';
-  if (/\.(json|ya?ml|toml|ini|env)$/i.test(name)) return 'config';
+  if (/\.(ts|tsx|js|jsx|py)$/i.test(name)) return 'code';
+  if (/\.(md|txt)$/i.test(name)) return 'doc';
+  if (/\.(json|ya?ml)$/i.test(name)) return 'config';
   return 'other';
+}
+
+function resolveActivityAgentId(context: any, sessionKey?: string): string {
+  if (typeof context?.agentId === 'string' && context.agentId) return context.agentId;
+  if (sessionKey && sessions.has(sessionKey)) return sessions.get(sessionKey)!.agentId;
+  return 'main';
+}
+
+function extractContentText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map((entry) => extractContentText(entry)).filter(Boolean).join('\n');
+  if (!isRecord(value)) return '';
+  if (typeof value.text === 'string') return value.text;
+  if (typeof value.content === 'string') return value.content;
+  if (Array.isArray(value.content)) return extractContentText(value.content);
+  return '';
+}
+
+function extractPromptPreview(event: any): string | undefined {
+  const direct =
+    extractContentText(event?.message)
+    || extractContentText(event?.input)
+    || extractContentText(event?.prompt)
+    || extractContentText(event?.content)
+    || extractContentText(event?.text);
+
+  if (direct) return truncate(direct, TRUNCATE_PREVIEW) || undefined;
+
+  if (Array.isArray(event?.messages)) {
+    for (let i = event.messages.length - 1; i >= 0; i -= 1) {
+      const message = event.messages[i];
+      if (message?.role === 'user') {
+        const text = extractContentText(message?.content ?? message);
+        if (text) return truncate(text, TRUNCATE_PREVIEW) || undefined;
+      }
+    }
+
+    const preview = previewValue(event.messages, TRUNCATE_PREVIEW);
+    return preview || undefined;
+  }
+
+  const preview = previewValue(event, TRUNCATE_PREVIEW);
+  return preview || undefined;
+}
+
+function extractAssistantPreview(event: any): string | undefined {
+  const texts = Array.isArray(event?.assistantTexts) ? event.assistantTexts.filter((value: unknown) => typeof value === 'string') : [];
+  const text = texts.join('\n') || extractContentText(event?.content) || extractContentText(event?.text) || extractContentText(event?.message);
+  if (text) return truncate(text, 400) || undefined;
+  return undefined;
+}
+
+function extractErrorMessage(errorLike: unknown): string | undefined {
+  if (!errorLike) return undefined;
+  if (typeof errorLike === 'string') return errorLike;
+  if (isRecord(errorLike)) {
+    if (typeof errorLike.message === 'string' && errorLike.message) return errorLike.message;
+    if (typeof errorLike.error === 'string' && errorLike.error) return errorLike.error;
+  }
+  const preview = previewValue(errorLike, TRUNCATE_PREVIEW);
+  return preview || undefined;
+}
+
+function normalizeToolNameFromEvent(event: any): string {
+  return event?.tool || event?.name || event?.toolName || 'unknown';
+}
+
+function extractToolArgsPreview(event: any): string | undefined {
+  const preview = previewValue(event?.args ?? event?.input ?? event?.params, 240);
+  return preview || undefined;
+}
+
+function extractToolResultPreview(event: any): string | undefined {
+  const preview = previewValue(event?.result ?? event?.output ?? event?.response, 240);
+  return preview || undefined;
+}
+
+function collectFilePaths(value: unknown, target: Set<string>, depth = 0) {
+  if (!value || depth > 4) return;
+
+  const directPath = extractFilePath(value);
+  if (directPath) target.add(directPath);
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectFilePaths(item, target, depth + 1);
+    return;
+  }
+
+  if (!isRecord(value)) return;
+
+  for (const nested of Object.values(value)) {
+    if (isRecord(nested) || Array.isArray(nested)) collectFilePaths(nested, target, depth + 1);
+  }
+}
+
+function extractFileActivityPaths(event: any): string[] {
+  const paths = new Set<string>();
+  collectFilePaths(event?.args, paths);
+  collectFilePaths(event?.result, paths);
+  collectFilePaths(event?.output, paths);
+  if (paths.size === 0) collectFilePaths(event, paths);
+  return Array.from(paths).slice(0, 5);
+}
+
+function shouldRecordFileChange(toolName: string, event: any): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  if (['write', 'edit', 'apply_patch'].includes(normalized)) return true;
+  if (/(write|edit|patch|save|create|update)/.test(normalized)) return true;
+  if (event?.changed === true) return true;
+  if (Array.isArray(event?.changedFiles) && event.changedFiles.length > 0) return true;
+  return false;
+}
+
+function shouldSkipWorkspaceDir(name: string): boolean {
+  if (WORKSPACE_SCAN_DIR_SKIP.has(name)) return true;
+  if (name.startsWith('.') && !WORKSPACE_SCAN_HIDDEN_DIR_ALLOWLIST.has(name)) return true;
+  return false;
+}
+
+function normalizeWorkspaceAgentIdFromDirName(dirName: string): string {
+  if (dirName === 'workspace') return 'main';
+  if (dirName.startsWith('workspace-')) return dirName.slice('workspace-'.length) || 'main';
+  return dirName || 'main';
+}
+
+async function resolveWorkspaceRoots(agentFilter?: string): Promise<Array<{ agentId: string; path: string }>> {
+  const { homedir } = await import('node:os');
+  const { readdir } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+
+  const homeDir = homedir();
+  const openclawDir = join(homeDir, '.openclaw');
+  const rootsByPath = new Map<string, { agentId: string; path: string; priority: number }>();
+
+  const addRoot = (agentId: string | undefined | null, workspacePath: string | undefined | null, priority: number) => {
+    const resolvedPath = resolveHomePath(workspacePath, homeDir);
+    if (!resolvedPath) return;
+    const resolvedAgentId = (agentId && agentId.trim()) || normalizeWorkspaceAgentIdFromDirName(resolvedPath.split('/').pop() || 'workspace');
+    const existing = rootsByPath.get(resolvedPath);
+    if (!existing || priority >= existing.priority) {
+      rootsByPath.set(resolvedPath, { agentId: resolvedAgentId, path: resolvedPath, priority });
+    }
+  };
+
+  addRoot('main', join(openclawDir, 'workspace'), 1);
+
+  try {
+    const entries = await readdir(openclawDir, { withFileTypes: true, encoding: 'utf8' });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name !== 'workspace' && !entry.name.startsWith('workspace-')) continue;
+      addRoot(normalizeWorkspaceAgentIdFromDirName(entry.name), join(openclawDir, entry.name), 0);
+    }
+  } catch {
+    // Ignore missing ~/.openclaw roots.
+  }
+
+  const config = cachedConfig || await readConfigFile();
+  cachedConfig = config;
+  const agentList = Array.isArray(config?.agents?.list) ? config.agents.list : [];
+  for (const agent of agentList) {
+    const configuredAgentId =
+      (typeof agent?.id === 'string' && agent.id)
+      || (typeof agent?.name === 'string' && agent.name)
+      || '';
+    if (!configuredAgentId) continue;
+    addRoot(configuredAgentId, agent?.workspace, 2);
+    if (!agent?.workspace) {
+      addRoot(configuredAgentId, join(openclawDir, configuredAgentId === 'main' ? 'workspace' : `workspace-${configuredAgentId}`), 1);
+    }
+  }
+
+  const roots = Array.from(rootsByPath.values()).map(({ agentId, path }) => ({ agentId, path }));
+  return agentFilter ? roots.filter((root) => root.agentId === agentFilter) : roots;
+}
+
+async function scanWorkspaceRoot(root: { agentId: string; path: string }, since: number): Promise<WorkspaceFileEntry[]> {
+  const { readdir, stat } = await import('node:fs/promises');
+  const { join, relative, sep } = await import('node:path');
+
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: root.path, depth: 0 }];
+  const entries: WorkspaceFileEntry[] = [];
+
+  while (queue.length > 0 && entries.length < WORKSPACE_SCAN_MAX_RESULTS) {
+    const current = queue.shift()!;
+    let items;
+
+    try {
+      items = await readdir(current.dir, { withFileTypes: true, encoding: 'utf8' });
+    } catch {
+      continue;
+    }
+
+    for (const item of items) {
+      const fullPath = join(current.dir, item.name);
+
+      if (item.isDirectory()) {
+        if (current.depth < WORKSPACE_SCAN_MAX_DEPTH && !shouldSkipWorkspaceDir(item.name)) {
+          queue.push({ dir: fullPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+
+      if (!item.isFile()) continue;
+
+      try {
+        const fileStat = await stat(fullPath);
+        if (fileStat.mtimeMs < since) continue;
+        entries.push({
+          name: item.name,
+          path: relative(root.path, fullPath).split(sep).join('/'),
+          size: fileStat.size,
+          mtime: fileStat.mtimeMs,
+          agentId: root.agentId,
+          type: classifyWorkspaceFile(item.name),
+        });
+      } catch {
+        // Ignore files that disappear during scan.
+      }
+    }
+  }
+
+  return entries;
 }
 
 async function refreshBuildings(): Promise<void> {
@@ -1018,9 +1246,21 @@ setInterval(() => {
 function hookBeforeAgentStart(event: any, context: any) {
   try {
     const agentId = context?.agentId || 'main';
-    const sessionKey = context?.sessionKey;
+    const sessionKey = context?.sessionKey || context?.sessionId || event?.sessionKey || event?.sessionId;
     if (!sessionKey) return;
     ensureSession(sessionKey, agentId);
+    recordActivity({
+      timestamp: Date.now(),
+      agentId,
+      sessionKey,
+      type: 'message',
+      summary: `${agentId} 开始新的运行`,
+      detail: extractPromptPreview(event),
+      metadata: {
+        direction: 'system',
+        phase: 'agent_start',
+      },
+    });
   } catch (err) { log.error?.(`[clawcraft] hookBeforeAgentStart error: ${err}`); }
 }
 
@@ -1028,13 +1268,27 @@ function hookLlmInput(event: any, context: any) {
   try {
     const sessionKey = context?.sessionKey;
     if (!sessionKey) return;
-    const agentId = context?.agentId || 'main';
+    const agentId = resolveActivityAgentId(context, sessionKey);
     const session = ensureSession(sessionKey, agentId);
     if (event?.model) {
       const agent = agents.get(agentId);
       if (agent) agent.model = event.model;
     }
     updateSession(sessionKey, { status: 'thinking', runCount: session.runCount + 1 });
+    recordActivity({
+      timestamp: Date.now(),
+      agentId,
+      sessionKey,
+      type: 'message',
+      summary: `${agentId} 收到新消息`,
+      detail: extractPromptPreview(event),
+      metadata: {
+        direction: 'user',
+        phase: 'llm_input',
+        model: event?.model,
+        runCount: session.runCount + 1,
+      },
+    });
   } catch (err) { log.error?.(`[clawcraft] hookLlmInput error: ${err}`); }
 }
 
@@ -1042,24 +1296,56 @@ function hookLlmOutput(event: any, context: any) {
   try {
     const sessionKey = context?.sessionKey;
     if (!sessionKey) return;
+    const agentId = resolveActivityAgentId(context, sessionKey);
+    const text = extractAssistantPreview(event);
+    const errorMessage = extractErrorMessage(event?.error);
 
     // Incident detection
     if (event.error) {
       const isRateLimit = event.error.code === 429 || event.error.message?.includes('429');
       if (isRateLimit) {
-        createIncidentInternal({ type: 'agent', id: context.agentId }, 'rate_limit', '模型限流 (429)', event.error.message, 'error');
+        createIncidentInternal({ type: 'agent', id: agentId }, 'rate_limit', '模型限流 (429)', event.error.message, 'error');
       }
-      counters.errors.push({ source: context.agentId, type: 'llm_error', count: 1, lastAt: Date.now() });
+      counters.errors.push({ source: agentId, type: 'llm_error', count: 1, lastAt: Date.now() });
+      recordActivity({
+        timestamp: Date.now(),
+        agentId,
+        sessionKey,
+        type: 'error',
+        summary: `${agentId} 的模型调用失败`,
+        detail: errorMessage,
+        metadata: {
+          phase: 'llm_output',
+          model: event?.model,
+          errorCode: event?.error?.code,
+        },
+      });
     }
     // Update token usage
     if (event.usage?.total_tokens) {
       counters.tokenUsage.total += event.usage.total_tokens;
-      counters.tokenUsage.byAgent[context.agentId] = (counters.tokenUsage.byAgent[context.agentId] || 0) + event.usage.total_tokens;
+      counters.tokenUsage.byAgent[agentId] = (counters.tokenUsage.byAgent[agentId] || 0) + event.usage.total_tokens;
     }
 
-    const texts: string[] = event?.assistantTexts || [];
-    const text = texts.join('\n') || event?.content || event?.text;
     updateSession(sessionKey, { status: 'responding', lastAssistantPreview: truncate(text, 400) });
+    if (!event.error) {
+      recordActivity({
+        timestamp: Date.now(),
+        agentId,
+        sessionKey,
+        type: 'message',
+        summary: `${agentId} 生成回复`,
+        detail: text,
+        metadata: {
+          direction: 'assistant',
+          phase: 'llm_output',
+          model: event?.model,
+          tokens: event?.usage?.total_tokens,
+          inputTokens: event?.usage?.input_tokens,
+          outputTokens: event?.usage?.output_tokens,
+        },
+      });
+    }
   } catch (err) { log.error?.(`[clawcraft] hookLlmOutput error: ${err}`); }
 }
 
@@ -1067,11 +1353,26 @@ function hookBeforeToolCall(event: any, context: any) {
   try {
     const sessionKey = context?.sessionKey;
     if (!sessionKey) return;
-    const toolName = event?.tool || event?.name || 'unknown';
+    const agentId = resolveActivityAgentId(context, sessionKey);
+    const toolName = normalizeToolNameFromEvent(event);
+    const argsPreview = extractToolArgsPreview(event);
     updateSession(sessionKey, {
       status: 'tooling', currentTool: toolName,
       currentToolCategory: categorizeTool(toolName),
       currentToolArgsPreview: truncate(typeof event?.args === 'string' ? event.args : JSON.stringify(event?.args ?? ''), 120),
+    });
+    recordActivity({
+      timestamp: Date.now(),
+      agentId,
+      sessionKey,
+      type: 'tool_call',
+      summary: `${agentId} 调用工具 ${toolName}`,
+      detail: argsPreview,
+      metadata: {
+        toolName,
+        phase: 'start',
+        category: categorizeTool(toolName),
+      },
     });
   } catch (err) { log.error?.(`[clawcraft] hookBeforeToolCall error: ${err}`); }
 }
@@ -1082,11 +1383,59 @@ function hookAfterToolCall(event: any, context: any) {
     if (!sessionKey) return;
     const session = sessions.get(sessionKey);
     if (!session) return;
+    const agentId = resolveActivityAgentId(context, sessionKey);
+    const toolName = normalizeToolNameFromEvent(event);
+    const resultPreview = extractToolResultPreview(event);
+    const errorMessage = extractErrorMessage(event?.error);
     
     // Incident detection
     if (event.error) {
       createIncidentInternal({ type: 'session', id: sessionKey }, 'tool_error', '工具调用失败', event.error.message || 'Unknown tool error', 'warning');
       counters.toolErrors++;
+      recordActivity({
+        timestamp: Date.now(),
+        agentId,
+        sessionKey,
+        type: 'error',
+        summary: `${agentId} 的工具 ${toolName} 调用失败`,
+        detail: errorMessage,
+        metadata: {
+          toolName,
+          phase: 'end',
+          status: 'error',
+        },
+      });
+    } else {
+      recordActivity({
+        timestamp: Date.now(),
+        agentId,
+        sessionKey,
+        type: 'tool_call',
+        summary: `${agentId} 完成工具 ${toolName}`,
+        detail: resultPreview,
+        metadata: {
+          toolName,
+          phase: 'end',
+          status: 'success',
+        },
+      });
+
+      if (shouldRecordFileChange(toolName, event)) {
+        for (const filePath of extractFileActivityPaths(event)) {
+          recordActivity({
+            timestamp: Date.now(),
+            agentId,
+            sessionKey,
+            type: 'file_change',
+            summary: `${agentId} 更新文件 ${filePath}`,
+            detail: resultPreview,
+            metadata: {
+              toolName,
+              path: filePath,
+            },
+          });
+        }
+      }
     }
 
     updateSession(sessionKey, {
@@ -1100,7 +1449,21 @@ function hookAgentEnd(event: any, context: any) {
   try {
     const sessionKey = context?.sessionKey;
     if (!sessionKey) return;
+    const agentId = resolveActivityAgentId(context, sessionKey);
     updateSession(sessionKey, { status: 'idle' });
+    recordActivity({
+      timestamp: Date.now(),
+      agentId,
+      sessionKey,
+      type: 'message',
+      summary: `${agentId} 完成本轮执行`,
+      detail: extractAssistantPreview(event) || sessions.get(sessionKey)?.lastAssistantPreview || undefined,
+      metadata: {
+        direction: 'system',
+        phase: 'agent_end',
+        status: 'idle',
+      },
+    });
   } catch (err) { log.error?.(`[clawcraft] hookAgentEnd error: ${err}`); }
 }
 
@@ -1108,14 +1471,45 @@ function hookSubagentSpawned(event: any, context: any) {
   try {
     const childSessionKey = event?.childSessionKey || event?.sessionKey;
     const agentId = event?.agentId || context?.agentId || 'main';
-    if (childSessionKey) ensureSession(childSessionKey, agentId);
+    if (childSessionKey) {
+      ensureSession(childSessionKey, agentId);
+      recordActivity({
+        timestamp: Date.now(),
+        agentId,
+        sessionKey: context?.sessionKey,
+        type: 'subagent',
+        summary: `${agentId} 生成子代理会话`,
+        detail: childSessionKey,
+        metadata: {
+          childSessionKey,
+          parentSessionKey: context?.sessionKey,
+          phase: 'spawned',
+        },
+      });
+    }
   } catch (err) { log.error?.(`[clawcraft] hookSubagentSpawned error: ${err}`); }
 }
 
 function hookSubagentEnded(event: any, context: any) {
   try {
     const childSessionKey = event?.childSessionKey || event?.sessionKey;
-    if (childSessionKey && sessions.has(childSessionKey)) updateSession(childSessionKey, { status: 'ended' });
+    if (childSessionKey && sessions.has(childSessionKey)) {
+      const agentId = sessions.get(childSessionKey)?.agentId || resolveActivityAgentId(context, childSessionKey);
+      updateSession(childSessionKey, { status: 'ended' });
+      recordActivity({
+        timestamp: Date.now(),
+        agentId,
+        sessionKey: childSessionKey,
+        type: 'subagent',
+        summary: `${agentId} 的子代理执行结束`,
+        detail: extractErrorMessage(event?.error),
+        metadata: {
+          childSessionKey,
+          parentSessionKey: context?.sessionKey,
+          phase: 'ended',
+        },
+      });
+    }
   } catch (err) { log.error?.(`[clawcraft] hookSubagentEnded error: ${err}`); }
 }
 
@@ -1346,11 +1740,22 @@ function handleChat(req: IncomingMessage, res: ServerResponse): boolean {
   if (req.method === 'POST' && url.endsWith('/send')) {
     readBody(req).then(async (body) => {
       try {
-        const { sessionKey, agentId, message, stream } = JSON.parse(body);
+        const { sessionKey, agentId, message, stream, clientMessageId, clientTimestamp } = JSON.parse(body);
         if (!message) { jsonResponse(res, 400, { ok: false, error: 'Missing message' }); return; }
 
         const targetAgent = agentId || sessions.get(sessionKey)?.agentId || 'main';
         const targetSession = sessionKey || `clawcraft-${Date.now()}`;
+        const userMessageTimestamp =
+          typeof clientTimestamp === 'number' && Number.isFinite(clientTimestamp)
+            ? clientTimestamp
+            : Date.now();
+        const userMessageId =
+          typeof clientMessageId === 'string' && clientMessageId
+            ? clientMessageId
+            : `user-${userMessageTimestamp}`;
+        const assistantTimestamp = Date.now();
+        const assistantMessageId = `asst-${randomUUID()}`;
+        ensureSession(targetSession, targetAgent);
 
         log.info?.(`[clawcraft] Chat → ${targetAgent}/${targetSession}: ${message.slice(0, 80)}`);
 
@@ -1358,7 +1763,7 @@ function handleChat(req: IncomingMessage, res: ServerResponse): boolean {
         broadcast({
           type: 'chat-message',
           sessionKey: targetSession,
-          message: { role: 'user', content: message, timestamp: Date.now(), id: `user-${Date.now()}` },
+          message: { role: 'user', content: message, timestamp: userMessageTimestamp, id: userMessageId },
         });
 
         if (stream !== false) {
@@ -1367,6 +1772,15 @@ function handleChat(req: IncomingMessage, res: ServerResponse): boolean {
             'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
             'Connection': 'keep-alive', 'Access-Control-Allow-Origin': '*',
           });
+          res.write(
+            `data: ${JSON.stringify({
+              type: 'session-meta',
+              sessionKey: targetSession,
+              agentId: targetAgent,
+              assistantMessageId,
+              assistantTimestamp,
+            })}\n\n`,
+          );
 
           try {
             const gwRes = await gatewayStream('/v1/chat/completions', JSON.stringify({
@@ -1377,24 +1791,41 @@ function handleChat(req: IncomingMessage, res: ServerResponse): boolean {
             }));
 
             let fullContent = '';
+            let gatewayBuffer = '';
+
+            const consumeGatewayText = (text: string) => {
+              gatewayBuffer += text;
+              const lines = gatewayBuffer.split(/\r?\n/);
+              gatewayBuffer = lines.pop() ?? '';
+
+              for (const line of lines) {
+                if (!line.startsWith('data: ') || line === 'data: [DONE]') {
+                  continue;
+                }
+
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  const delta = data.choices?.[0]?.delta?.content;
+                  if (typeof delta === 'string' && delta) {
+                    fullContent += delta;
+                  }
+                } catch {
+                  // Ignore partial or non-JSON SSE frames while mirroring the stream.
+                }
+              }
+            };
 
             gwRes.on('data', (chunk: Buffer) => {
               const text = chunk.toString();
-              // Parse SSE lines for content extraction
-              for (const line of text.split('\n')) {
-                if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                  try {
-                    const data = JSON.parse(line.slice(6));
-                    const delta = data.choices?.[0]?.delta?.content;
-                    if (delta) fullContent += delta;
-                  } catch { /* ignore parse errors for partial lines */ }
-                }
-              }
+              consumeGatewayText(text);
               // Forward raw SSE to client
               res.write(text);
             });
 
             gwRes.on('end', () => {
+              if (gatewayBuffer) {
+                consumeGatewayText('\n');
+              }
               res.write('data: [DONE]\n\n');
               res.end();
 
@@ -1403,7 +1834,12 @@ function handleChat(req: IncomingMessage, res: ServerResponse): boolean {
                 broadcast({
                   type: 'chat-message',
                   sessionKey: targetSession,
-                  message: { role: 'assistant', content: fullContent, timestamp: Date.now(), id: `asst-${Date.now()}` },
+                  message: {
+                    role: 'assistant',
+                    content: fullContent,
+                    timestamp: assistantTimestamp,
+                    id: assistantMessageId,
+                  },
                 });
               }
             });
@@ -2648,14 +3084,21 @@ function handleActivity(req: IncomingMessage, res: ServerResponse): boolean {
   const agentId = url.searchParams.get('agentId') || undefined;
   const sinceParam = url.searchParams.get('since');
   const limitParam = url.searchParams.get('limit');
-  const since = sinceParam ? parseInt(sinceParam, 10) : Date.now() - 24 * 60 * 60 * 1000;
-  const limit = limitParam ? Math.min(parseInt(limitParam, 10), 200) : 50;
+  const statsOnly = url.searchParams.get('statsOnly') === 'true';
+  const parsedSince = sinceParam ? parseInt(sinceParam, 10) : NaN;
+  const parsedLimit = limitParam ? parseInt(limitParam, 10) : NaN;
+  const since = Number.isFinite(parsedSince) ? parsedSince : Date.now() - RECENT_WORKSPACE_WINDOW_MS;
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 200) : 50;
+  const stats = getActivityStats(agentId);
+
+  if (statsOnly) {
+    jsonResponse(res, 200, { ok: true, events: [], stats });
+    return true;
+  }
 
   const filtered = activityEvents
     .filter((e) => e.timestamp >= since && (!agentId || e.agentId === agentId))
     .slice(0, limit);
-
-  const stats = getActivityStats(agentId);
 
   jsonResponse(res, 200, { ok: true, events: filtered, stats });
   return true;
@@ -2666,50 +3109,30 @@ function handleWorkspaceFiles(req: IncomingMessage, res: ServerResponse): boolea
   if (req.method !== 'GET') { jsonResponse(res, 405, { ok: false, error: 'Method not allowed' }); return true; }
 
   const url = new URL(req.url || '', `http://${req.headers.host}`);
-  const agentId = url.searchParams.get('agentId') || 'main';
+  const agentId = url.searchParams.get('agentId') || undefined;
+  const limitParam = url.searchParams.get('limit');
+  const parsedLimit = limitParam ? parseInt(limitParam, 10) : NaN;
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, WORKSPACE_SCAN_MAX_RESULTS) : 100;
 
   (async () => {
     try {
-      const { homedir } = await import('node:os');
-      const { readdir, stat } = await import('node:fs/promises');
-      const { join } = await import('node:path');
-      const homeDir = homedir();
+      const roots = await resolveWorkspaceRoots(agentId);
+      const since = Date.now() - RECENT_WORKSPACE_WINDOW_MS;
+      const files = (await Promise.all(roots.map((root) => scanWorkspaceRoot(root, since))))
+        .flat()
+        .sort((left, right) => right.mtime - left.mtime);
 
-      const config = cachedConfig || await readConfigFile();
-      const agentList = Array.isArray(config?.agents?.list) ? config.agents.list : [];
-      const agent = agentList.find((a: any) => (a.id || a.name) === agentId);
-      const workspacePath = agent?.workspace || join(homeDir, '.openclaw', `workspace-${agentId}`);
-
-      const entries: WorkspaceFileEntry[] = [];
-
-      // Scan workspace root files + key subdirs
-      const scanDirs = ['', 'projects', 'skills', 'memory', '.learnings'];
-      for (const subdir of scanDirs) {
-        const dirPath = join(workspacePath, subdir);
-        try {
-          const items = await readdir(dirPath);
-          for (const item of items) {
-            if (item.startsWith('.') || item === 'node_modules') continue;
-            const fullPath = join(dirPath, item);
-            try {
-              const st = await stat(fullPath);
-              if (!st.isFile()) continue;
-              entries.push({
-                name: item,
-                path: subdir ? `${subdir}/${item}` : item,
-                size: st.size,
-                mtime: st.mtimeMs,
-                agentId,
-                type: classifyWorkspaceFile(item),
-              });
-            } catch { /* skip */ }
-          }
-        } catch { /* dir doesn't exist, skip */ }
+      const deduped: WorkspaceFileEntry[] = [];
+      const seen = new Set<string>();
+      for (const file of files) {
+        const key = `${file.agentId}:${file.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(file);
+        if (deduped.length >= limit) break;
       }
 
-      // Sort by mtime desc
-      entries.sort((a, b) => b.mtime - a.mtime);
-      jsonResponse(res, 200, { ok: true, files: entries.slice(0, 100) });
+      jsonResponse(res, 200, { ok: true, files: deduped });
     } catch (err: any) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
