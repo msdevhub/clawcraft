@@ -140,14 +140,24 @@ export function ResourceBar() {
         </button>
 
         {/* Channels */}
-        <div className={`group flex cursor-default items-center gap-1 border-r border-slate-700/30 px-3 py-2 transition-all duration-200 hover:bg-slate-800/30 ${channelOnline > 0 ? '' : 'opacity-50'}`} title="Channels">
+        <div className={`group flex cursor-default items-center gap-1 border-r border-slate-700/30 px-3 py-2 transition-all duration-200 hover:bg-slate-800/30 ${channelOnline > 0 ? '' : 'opacity-50'}`} title={`${channelOnline} 个频道在线，共 ${channelTotal} 个`}>
           <span className="text-xs opacity-70 group-hover:opacity-100 transition-opacity">📡</span>
-          <span className={`font-mono text-xs font-bold ${channelOnline > 0 ? 'text-cyan-300' : 'text-slate-500'}`}>{channelOnline}/{channelTotal}</span>
+          <span className={`font-mono text-xs font-bold ${channelOnline > 0 ? 'text-cyan-300' : 'text-slate-500'}`}>{channelOnline}</span>
         </div>
 
-        {/* SSE Connection */}
-        <div className="flex items-center border-r border-slate-700/30 px-2.5 py-2" title={connected ? 'Connected' : 'Disconnected'}>
-          <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-400 animate-pulse'}`} />
+        {/* SSE Connection + Channel Health */}
+        <div className="flex items-center border-r border-slate-700/30 px-2.5 py-2" title={
+          !connected ? '已断开连接'
+            : channelTotal > 0 && channelOnline === 0 ? '已连接，但所有频道离线'
+            : channelOnline < channelTotal ? `已连接，${channelTotal - channelOnline} 个频道离线`
+            : '已连接'
+        }>
+          <span className={`inline-block h-1.5 w-1.5 rounded-full ${
+            !connected ? 'bg-red-400 animate-pulse'
+              : channelTotal > 0 && channelOnline === 0 ? 'bg-amber-400 animate-pulse'
+              : channelOnline < channelTotal ? 'bg-amber-400'
+              : 'bg-emerald-400'
+          }`} />
         </div>
       </div>
 

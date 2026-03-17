@@ -121,6 +121,7 @@ export function ChannelManager({ onClose, inline }: ChannelManagerProps) {
   const [actionResult, setActionResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const addEvent = useWorldStore((s) => s.addEvent);
+  const liveChannels = useWorldStore((s) => s.channels);
   const clearTimersRef = useRef<Record<string, number>>({});
 
   const loadConfig = useCallback(async (showSpinner = false) => {
@@ -365,9 +366,18 @@ export function ChannelManager({ onClose, inline }: ChannelManagerProps) {
                                   <p className="text-sm font-medium text-slate-200">{channelDef?.label ?? channelType}</p>
                                   <p className="text-[11px] text-slate-500">{channelType}</p>
                                 </div>
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${config.enabled !== false ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700/50 text-slate-500'}`}>
-                                  {config.enabled !== false ? '🔥 在线' : '⏸️ 停用'}
-                                </span>
+                                {(() => {
+                                  const liveStatus = liveChannels[channelType]?.status;
+                                  const isConnected = liveStatus === 'connected';
+                                  const isDisabled = config.enabled === false;
+                                  const label = isDisabled ? '⏸️ 停用' : isConnected ? '🔥 在线' : '⚠️ 离线';
+                                  const cls = isDisabled
+                                    ? 'bg-slate-700/50 text-slate-500'
+                                    : isConnected
+                                      ? 'bg-emerald-500/20 text-emerald-400'
+                                      : 'bg-amber-500/20 text-amber-400';
+                                  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${cls}`}>{label}</span>;
+                                })()}
                               </div>
                               <div className="space-y-1 rounded-lg bg-slate-950/60 px-3 py-2 text-xs">
                                 {config.baseUrl && <InfoRow label="地址" value={formatChannelValue(config.baseUrl)} />}

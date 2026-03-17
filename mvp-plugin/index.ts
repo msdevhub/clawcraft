@@ -1924,7 +1924,17 @@ async function readSessionHistory(sessionKey: string): Promise<any[]> {
         // Session dirs may be named by sessionKey (with special chars encoded)
         const matchingDir = sessionDirs.find(d => d === sessionKey || d.includes(sessionKey));
         if (matchingDir) {
-          const transcriptPath = join(sessionsDir, matchingDir, 'transcript.jsonl');
+          let transcriptPath = join(sessionsDir, matchingDir);
+
+          // Check if it's a directory (v1 legacy) or file (v2 flat)
+          const { stat } = await import('node:fs/promises');
+          try {
+            const stats = await stat(transcriptPath);
+            if (stats.isDirectory()) {
+               transcriptPath = join(transcriptPath, 'transcript.jsonl');
+            }
+          } catch { /* ignore */ }
+
           try {
             const content = await readFile(transcriptPath, 'utf-8');
             for (const line of content.split('\n').filter(Boolean)) {

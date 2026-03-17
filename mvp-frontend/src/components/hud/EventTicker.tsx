@@ -37,9 +37,19 @@ function EventRow({ event }: { event: SSEEvent }) {
 
 export function EventTicker() {
   const recentEvents = useWorldStore((s) => s.recentEvents);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const events = [...recentEvents].reverse();
+
+  const prevCountRef = useRef(recentEvents.length);
+
+  // Auto-expand when first event arrives
+  useEffect(() => {
+    if (recentEvents.length > 0 && prevCountRef.current === 0) {
+      setCollapsed(false);
+    }
+    prevCountRef.current = recentEvents.length;
+  }, [recentEvents.length]);
 
   useEffect(() => {
     if (collapsed || recentEvents.length === 0) {

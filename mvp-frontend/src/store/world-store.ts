@@ -17,6 +17,53 @@ import type {
   WorldState,
 } from '@/store/types';
 
+// ── Chat persistence via localStorage ──
+const CHAT_STORAGE_KEY = 'clawcraft:chat';
+const CHAT_MAX_PERSISTED_MESSAGES = 200;
+
+interface PersistedChat {
+  sessionKey: string | null;
+  targetAgent: string;
+  messages: ChatMessage[];
+  savedAt: number;
+}
+
+function loadPersistedChat(): Partial<PersistedChat> {
+  try {
+    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw) as PersistedChat;
+    // Discard stale data older than 24h
+    if (Date.now() - data.savedAt > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem(CHAT_STORAGE_KEY);
+      return {};
+    }
+    return data;
+  } catch {
+    return {};
+  }
+}
+
+function persistChat(sessionKey: string | null, targetAgent: string, messages: ChatMessage[]) {
+  try {
+    const data: PersistedChat = {
+      sessionKey,
+      targetAgent,
+      messages: messages.slice(-CHAT_MAX_PERSISTED_MESSAGES),
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // localStorage full or unavailable — ignore
+  }
+}
+
+function clearPersistedChat() {
+  try {
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+  } catch {}
+}
+
 export interface WorldStore {
   connected: boolean;
   serverInstanceId: string | null;
@@ -70,6 +117,8 @@ export interface WorldStore {
   setChatTargetAgent: (agentId: string) => void;
 }
 
+const _persistedChat = loadPersistedChat();
+
 const initialState = {
   connected: false,
   serverInstanceId: null,
@@ -88,8 +137,8 @@ const initialState = {
   developerMode: false,
   unitCardTab: 'overview' as UnitCardTab,
   recentEvents: [] as SSEEvent[],
-  chatSessionKey: null,
-  chatMessages: [] as ChatMessage[],
+  chatSessionKey: _persistedChat.sessionKey ?? null,
+  chatMessages: (_persistedChat.messages ?? []) as ChatMessage[],
   chatLoading: false,
   chatStreamingText: '',
   chatError: null as string | null,
@@ -99,7 +148,7 @@ const initialState = {
   muted: false,
   chatDrawerOpen: false,
   activityPanelOpen: false,
-  chatTargetAgent: 'main',
+  chatTargetAgent: _persistedChat.targetAgent ?? 'main',
 };
 
 function makeEvent(input: Omit<SSEEvent, 'id'>): SSEEvent {
@@ -315,17 +364,30 @@ function replaceMessageSessionKey(messages: ChatMessage[], fromSessionKey: strin
 export const useWorldStore = create<WorldStore>((set, get) => ({
   ...initialState,
   resetWorld: () =>
-    set((state) => ({
-      ...initialState,
-      developerMode: state.developerMode,
-      muted: state.muted,
-    })),
+    set((state) => {
+      clearPersistedChat();
+      return {
+        ...initialState,
+        developerMode: state.developerMode,
+        muted: state.muted,
+        // Reset chat on world reset (new server instance)
+        chatSessionKey: null,
+        chatMessages: [],
+      };
+    }),
   setFullState: (state) =>
     set((current) => {
       const selectedExists =
         current.selectedEntityType === 'gateway' ||
         (current.selectedEntityType === 'agent' && Boolean(state.agents[current.selectedEntityId ?? ''])) ||
         (current.selectedEntityType === 'session' && Boolean(state.sessions[current.selectedEntityId ?? '']));
+
+      // Preserve chat context if we have an active session with messages or ongoing stream
+      const hasActiveChat = current.chatSessionKey && (current.chatMessages.length > 0 || current.chatLoading || current.chatStreamingText);
+      const nextChatTargetAgent =
+        current.chatTargetAgent && (state.agents?.[current.chatTargetAgent] || current.chatTargetAgent === 'main')
+          ? current.chatTargetAgent
+          : Object.keys(state.agents ?? {})[0] ?? 'main';
 
       return {
         agents: state.agents ?? {},
@@ -340,25 +402,21 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
         version: state.version ?? current.version,
         selectedEntityId: selectedExists ? current.selectedEntityId : null,
         selectedEntityType: selectedExists ? current.selectedEntityType : null,
-        chatTargetAgent:
-          current.chatTargetAgent && (state.agents?.[current.chatTargetAgent] || current.chatTargetAgent === 'main')
-            ? current.chatTargetAgent
-            : Object.keys(state.agents ?? {})[0] ?? 'main',
-        chatSessionKey:
-          selectedExists && current.selectedEntityId && current.selectedEntityType
-            ? resolveChatSession(current.selectedEntityId, current.selectedEntityType, {
-                agents: state.agents ?? {},
-                sessions: state.sessions ?? {},
-              })
-            : resolveChatSessionForAgent(
-                current.chatTargetAgent && (state.agents?.[current.chatTargetAgent] || current.chatTargetAgent === 'main')
-                  ? current.chatTargetAgent
-                  : Object.keys(state.agents ?? {})[0] ?? 'main',
-                {
+        chatTargetAgent: nextChatTargetAgent,
+        // Keep the current chat session and messages if user has an active conversation
+        chatSessionKey: hasActiveChat
+          ? current.chatSessionKey
+          : (selectedExists && current.selectedEntityId && current.selectedEntityType
+              ? resolveChatSession(current.selectedEntityId, current.selectedEntityType, {
                   agents: state.agents ?? {},
                   sessions: state.sessions ?? {},
-                },
-              ),
+                })
+              : resolveChatSessionForAgent(nextChatTargetAgent, {
+                  agents: state.agents ?? {},
+                  sessions: state.sessions ?? {},
+                })),
+        // Never clear chatMessages on state refresh
+        chatMessages: current.chatMessages,
         agentActivity: deriveAgentActivity(state.agents ?? {}, state.sessions ?? {}, current.agentActivity),
       };
     }),
@@ -406,7 +464,12 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
           toolName: delta.message.toolName,
         };
 
-        if (state.chatSessionKey === delta.sessionKey) {
+        // Match current session OR any session from the same target agent (for pending sessions)
+        const matchesCurrent = state.chatSessionKey === delta.sessionKey;
+        const matchesTargetAgent = !matchesCurrent && state.chatTargetAgent &&
+          state.sessions[delta.sessionKey]?.agentId === state.chatTargetAgent;
+
+        if (matchesCurrent || matchesTargetAgent) {
           nextChatMessages = dedupeMessages([...state.chatMessages, message]);
         }
       }
@@ -434,8 +497,11 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
         }
       }
 
-      const nextChatSessionKey =
-        state.selectedEntityType === 'session' && state.selectedEntityId
+      // Don't override chatSessionKey during active send/stream — it would disrupt the conversation
+      const isActivelyChatting = state.chatLoading || state.chatStreamController || state.chatStreamingText;
+      const nextChatSessionKey = isActivelyChatting
+        ? state.chatSessionKey
+        : state.selectedEntityType === 'session' && state.selectedEntityId
           ? state.selectedEntityId
           : state.chatTargetAgent
             ? resolveChatSessionForAgent(state.chatTargetAgent, { agents: nextAgents, sessions: nextSessions })
@@ -599,12 +665,16 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
               ])
             : nextMessagesBase;
 
+          const resolvedSessionKey = activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey;
+          // Persist after message finalized
+          persistChat(resolvedSessionKey, state.chatTargetAgent, nextMessages);
+
           return {
             chatLoading: false,
             chatStreamingText: '',
             chatError: null,
             chatStreamController: null,
-            chatSessionKey: activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey,
+            chatSessionKey: resolvedSessionKey,
             chatMessages: nextMessages,
           };
         });
@@ -704,12 +774,15 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
               ])
             : nextMessagesBase;
 
+          const resolvedSessionKey = activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey;
+          persistChat(resolvedSessionKey, state.chatTargetAgent, nextMessages);
+
           return {
             chatLoading: false,
             chatStreamingText: '',
             chatError: null,
             chatStreamController: null,
-            chatSessionKey: activeSessionKey.startsWith('pending:') ? state.chatSessionKey : activeSessionKey,
+            chatSessionKey: resolvedSessionKey,
             chatMessages: nextMessages,
           };
         });
@@ -754,7 +827,18 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
           }))
         : [];
 
-      set({ chatMessages: dedupeMessages(messages), chatLoading: false, chatError: null });
+      set((prevState) => {
+        // If API returned empty but we already have messages (e.g. optimistic send), keep them
+        const finalMessages = messages.length > 0
+          ? dedupeMessages(messages)
+          : prevState.chatMessages.length > 0
+            ? prevState.chatMessages
+            : [];
+        return { chatMessages: finalMessages, chatLoading: false, chatError: null };
+      });
+      // Persist loaded history
+      const currentMessages = get().chatMessages;
+      persistChat(sessionKey, get().chatTargetAgent, currentMessages);
     } catch (error) {
       const messageText = error instanceof Error ? error.message : 'Failed to load chat history';
       const event = makeEvent({
@@ -776,6 +860,7 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
   },
   startNewChatSession: () => {
     get().chatStreamController?.abort();
+    clearPersistedChat();
     set({
       chatLoading: false,
       chatStreamingText: '',
@@ -806,9 +891,11 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
   setChatTargetAgent: (agentId) =>
     set((state) => {
       state.chatStreamController?.abort();
+      const nextSessionKey = resolveChatSessionForAgent(agentId, state);
+      persistChat(nextSessionKey, agentId, []);
       return {
         chatTargetAgent: agentId,
-        chatSessionKey: resolveChatSessionForAgent(agentId, state),
+        chatSessionKey: nextSessionKey,
         chatMessages: [],
         chatStreamingText: '',
         chatError: null,

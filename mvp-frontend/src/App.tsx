@@ -9,6 +9,7 @@ import { EntityRadar } from '@/components/hud/EntityRadar';
 import { QuickActionBar } from '@/components/hud/QuickActionBar';
 import { WelcomeOverlay } from '@/components/hud/WelcomeOverlay';
 import { DeveloperFilter } from '@/components/controls/DeveloperFilter';
+import { UserMenu } from '@/auth/UserMenu';
 import { ChatDrawer } from '@/components/hud/ChatDrawer';
 import { useSSE } from '@/hooks/use-sse';
 import { useWorldStore } from '@/store/world-store';
@@ -274,8 +275,9 @@ export default function App() {
       {/* ── Morning Brief ── */}
       <MorningBrief />
 
-      {/* ── Top Right: Developer Filter ── */}
-      <div className="pointer-events-auto absolute right-4 top-4 z-20">
+      {/* ── Top Right: User Menu + Developer Filter ── */}
+      <div className="pointer-events-auto absolute right-4 top-4 z-20 flex items-center gap-3">
+        <UserMenu />
         <DeveloperFilter />
       </div>
 
@@ -296,13 +298,13 @@ export default function App() {
       />
 
       {/* ── Bottom Left: Home Button ── */}
-      <div className="pointer-events-auto absolute bottom-4 left-4 z-20">
+      <div className="pointer-events-auto absolute bottom-4 left-4 z-20 sm:bottom-20">
         <button
           onClick={() => (window as any).__resetView?.()}
           className="rounded-xl border border-slate-700/50 bg-slate-900/80 px-3 py-2 text-sm text-slate-300 backdrop-blur-sm hover:bg-slate-800/80 hover:text-slate-100 transition-colors"
-          title="回到主城"
+          title="回到中心视角 (R)"
         >
-          🏰 主城
+          🏠 回到中心
         </button>
       </div>
 

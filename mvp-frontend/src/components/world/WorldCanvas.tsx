@@ -311,7 +311,7 @@ function createGatewayEntity(): Container {
 
   const label = new Text({
     text: 'Gateway',
-    style: new TextStyle({ fontSize: 12, fill: 0xffffff, fontFamily: 'monospace' }),
+    style: new TextStyle({ fontSize: 13, fill: 0xffffff, fontFamily: 'monospace', fontWeight: 'bold', dropShadow: { color: 0x000000, alpha: 0.7, distance: 1, blur: 2 } }),
   });
   label.anchor.set(0.5, 0);
   label.position.set(0, GATEWAY_H / 2 + 12);
@@ -332,7 +332,7 @@ function createAgentEntity(agent: AgentState, colorIndex: number): Container {
 
   const label = new Text({
     text: agent.name,
-    style: new TextStyle({ fontSize: 11, fill: 0xffffff, fontFamily: 'monospace' }),
+    style: new TextStyle({ fontSize: 12, fill: 0xffffff, fontFamily: 'monospace', dropShadow: { color: 0x000000, alpha: 0.7, distance: 1, blur: 2 } }),
   });
   label.anchor.set(0.5, 0);
   label.position.set(0, AGENT_H / 2 + 8);
@@ -388,7 +388,7 @@ function createBuildingEntity(building: KingdomBuilding): Container {
 
   const label = new Text({
     text: building.name,
-    style: new TextStyle({ fontSize: 10, fill: 0xffffff, fontFamily: 'monospace' }),
+    style: new TextStyle({ fontSize: 12, fill: 0xffffff, fontFamily: 'monospace', dropShadow: { color: 0x000000, alpha: 0.7, distance: 1, blur: 2 } }),
   });
   label.anchor.set(0.5, 0);
   label.position.set(0, BUILDING_H / 2 + 10);
@@ -1119,8 +1119,10 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
 
       const centerWorld = () => {
         const isMobile = app.screen.width < 640;
+        const initScale = isMobile ? 0.7 : 0.85;
+        world.scale.set(initScale, initScale);
         world.x = app.screen.width / 2;
-        world.y = isMobile ? app.screen.height * 0.18 : app.screen.height * 0.22;
+        world.y = isMobile ? app.screen.height * 0.18 : app.screen.height * 0.25;
       };
 
       centerWorld();
@@ -1281,7 +1283,6 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
 
       (window as any).__resetView = () => {
         centerWorld();
-        world.scale.set(1, 1);
       };
       (window as any).__panToEntity = (entityId: string, entityType: EntityType) => {
         const targetKey = entityType === 'gateway' ? 'gateway' : `${entityType}:${entityId}`;
@@ -1321,10 +1322,14 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
         return;
       }
       // R: reset camera to origin
-      if (e.key === 'r' && !e.ctrlKey && !e.metaKey && worldRef.current) {
+      if (e.key === 'r' && !e.ctrlKey && !e.metaKey && worldRef.current && appRef.current) {
         const w = worldRef.current;
-        w.position.set(0, 0);
-        w.scale.set(1, 1);
+        const a = appRef.current;
+        const isMobile = a.screen.width < 640;
+        const initScale = isMobile ? 0.7 : 0.85;
+        w.scale.set(initScale, initScale);
+        w.x = a.screen.width / 2;
+        w.y = isMobile ? a.screen.height * 0.18 : a.screen.height * 0.25;
         return;
       }
       // Ctrl+Z / Cmd+Z: undo last brick stroke
@@ -1867,41 +1872,54 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
           <div className="absolute left-1/2 -bottom-1 h-2 w-2 -translate-x-1/2 rotate-45 border-b border-r border-slate-600 bg-slate-900/95" />
         </div>
       )}
-      {/* Wall Tool Toolbar */}
+      {/* Right-side Toolbar */}
       <div className="absolute right-3 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-10">
         <button
-          className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg shadow-lg border transition-all ${
+          className={`flex flex-col items-center gap-0.5 rounded-lg px-2 py-2 text-lg shadow-lg border transition-all ${
             wallToolRef.current.active
               ? 'bg-amber-700 border-amber-500 text-white shadow-amber-500/30 ring-2 ring-amber-400/40'
               : 'bg-slate-800/90 border-slate-600 text-slate-300 hover:bg-slate-700'
           }`}
-          title="🧱 围墙工具 (Esc 退出)&#10;▪ 空地拖动 = 铺砖&#10;▪ 砖上拖动 = 擦除&#10;▪ Shift = 直线&#10;▪ Ctrl+Z = 撤销"
+          title="围墙工具 (Esc 退出)"
           onClick={() => {
             wallToolRef.current.active = !wallToolRef.current.active;
             wallToolRef.current.painting = false;
             wallGhostPosRef.current = null;
             containerRef.current?.style.setProperty('--wall-tool', wallToolRef.current.active ? '1' : '0');
           }}
-        >🧱</button>
+        >
+          🧱
+          <span className="text-[9px] leading-none">围墙</span>
+        </button>
         <button
-          className="w-10 h-10 rounded-lg flex items-center justify-center text-lg shadow-lg border bg-slate-800/90 border-slate-600 text-slate-300 hover:bg-red-900/80"
+          className="flex flex-col items-center gap-0.5 rounded-lg px-2 py-2 text-lg shadow-lg border bg-slate-800/90 border-slate-600 text-slate-300 hover:bg-red-900/80"
           title="清除所有围墙"
           onClick={() => {
             wallBricksRef.current = new Set();
             wallBricksDirtyRef.current = true;
             void saveWalls(new Set());
           }}
-        >🗑️</button>
+        >
+          🗑️
+          <span className="text-[9px] leading-none">清除</span>
+        </button>
         <button
-          className="w-10 h-10 rounded-lg flex items-center justify-center text-sm shadow-lg border bg-slate-800/90 border-slate-600 text-slate-300 hover:bg-slate-700"
+          className="flex flex-col items-center gap-0.5 rounded-lg px-2 py-2 text-sm shadow-lg border bg-slate-800/90 border-slate-600 text-slate-300 hover:bg-slate-700"
           title="重置视角 (R)"
           onClick={() => {
-            if (worldRef.current) {
-              worldRef.current.position.set(0, 0);
-              worldRef.current.scale.set(1, 1);
+            if (worldRef.current && appRef.current) {
+              const a = appRef.current;
+              const isMobile = a.screen.width < 640;
+              const initScale = isMobile ? 0.7 : 0.85;
+              worldRef.current.scale.set(initScale, initScale);
+              worldRef.current.x = a.screen.width / 2;
+              worldRef.current.y = isMobile ? a.screen.height * 0.18 : a.screen.height * 0.25;
             }
           }}
-        >🔄</button>
+        >
+          🔄
+          <span className="text-[9px] leading-none">视角</span>
+        </button>
       </div>
     </div>
   );

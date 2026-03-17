@@ -89,11 +89,18 @@ export function ChatDrawer() {
     [chatTargetAgent, sessions],
   );
 
+  // Only load history when drawer opens or user explicitly picks a session.
+  // NEVER load during active streaming/sending — it would replace messages with empty array.
+  const prevSessionKeyRef = useRef(chatSessionKey);
   useEffect(() => {
-    if (chatDrawerOpen && chatSessionKey) {
-      void loadChatHistory(chatSessionKey);
-    }
-  }, [chatDrawerOpen, chatSessionKey, loadChatHistory]);
+    if (!chatDrawerOpen || !chatSessionKey) return;
+    // Skip if we're actively streaming or sending
+    if (isStreaming || chatLoading) return;
+    // Skip if session key didn't actually change (prevents re-fetch on other state changes)
+    if (chatSessionKey === prevSessionKeyRef.current && chatMessages.length > 0) return;
+    prevSessionKeyRef.current = chatSessionKey;
+    void loadChatHistory(chatSessionKey);
+  }, [chatDrawerOpen, chatSessionKey, loadChatHistory, isStreaming, chatLoading, chatMessages.length]);
 
   useEffect(() => {
     if (!chatDrawerOpen) {
@@ -146,14 +153,14 @@ export function ChatDrawer() {
           </button>
         </div>
 
-        <div className="grid gap-3 border-b border-slate-700/30 px-4 py-3">
-          <div className="grid grid-cols-[1fr_auto] gap-3">
+        <div className="grid gap-2 border-b border-slate-700/30 px-4 py-3">
+          <div className="grid grid-cols-[1fr_auto] gap-2">
             <label className="space-y-1">
               <span className="text-[11px] text-slate-500">Agent</span>
               <select
                 value={chatTargetAgent}
                 onChange={(event) => setChatTargetAgent(event.target.value)}
-                className="w-full rounded-xl border border-slate-700/70 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-200"
+                className="w-full rounded-xl border border-slate-700/70 bg-slate-900/70 px-3 py-1.5 text-sm text-slate-100 outline-none transition-all duration-200"
               >
                 {(agentIds.length > 0 ? agentIds : ['main']).map((agentId) => (
                   <option key={agentId} value={agentId}>
@@ -169,40 +176,32 @@ export function ChatDrawer() {
                   startNewChatSession();
                   requestChatFocus();
                 }}
-                className="rounded-xl border border-sky-500/30 bg-sky-600/10 px-3 py-2 text-sm font-medium text-sky-200 transition-all duration-200 hover:bg-sky-600/20"
+                className="rounded-xl border border-sky-500/30 bg-sky-600/10 px-3 py-1.5 text-sm font-medium text-sky-200 transition-all duration-200 hover:bg-sky-600/20"
               >
                 ➕ 新对话
               </button>
             </div>
           </div>
 
-          <label className="space-y-1">
-            <span className="text-[11px] text-slate-500">Session</span>
-            <select
-              value={chatSessionKey ?? '__new__'}
-              onChange={(event) => {
-                if (event.target.value === '__new__') {
-                  startNewChatSession();
-                  requestChatFocus();
-                  return;
-                }
-                setChatSessionKey(event.target.value);
-              }}
-              className="w-full rounded-xl border border-slate-700/70 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-200"
-            >
-              <option value="__new__">新会话</option>
-              {recentSessions.map((session) => (
-                <option key={session.sessionKey} value={session.sessionKey}>
-                  {`${session.sessionKey.slice(0, 20)} · ${formatTime(session.lastActivityTs)}`}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="flex items-center justify-between rounded-2xl border border-slate-800/80 bg-slate-900/60 px-3 py-2 text-xs">
-            <span className="text-slate-500">当前会话</span>
-            <span className="text-slate-200">{chatSessionKey ? chatSessionKey.slice(0, 22) : '等待首条消息'}</span>
-          </div>
+          <select
+            value={chatSessionKey ?? '__new__'}
+            onChange={(event) => {
+              if (event.target.value === '__new__') {
+                startNewChatSession();
+                requestChatFocus();
+                return;
+              }
+              setChatSessionKey(event.target.value);
+            }}
+            className="w-full rounded-xl border border-slate-700/70 bg-slate-900/70 px-3 py-1.5 text-sm text-slate-100 outline-none transition-all duration-200"
+          >
+            <option value="__new__">新会话</option>
+            {recentSessions.map((session) => (
+              <option key={session.sessionKey} value={session.sessionKey}>
+                {`${session.sessionKey.slice(0, 20)} · ${formatTime(session.lastActivityTs)}`}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -238,16 +237,9 @@ export function ChatDrawer() {
             ) : null}
 
             {chatMessages.length === 0 && !chatLoading ? (
-              <div className="rounded-2xl border border-dashed border-slate-700/50 bg-slate-900/30 px-4 py-6 text-center">
-                <p className="text-3xl">💭</p>
-                <p className="mt-2 text-sm text-slate-300">还没有消息</p>
-                <p className="mt-1 text-[11px] text-slate-500">向 {chatTargetAgent || 'agent'} 发一条指令，或者开始一个新会话。</p>
-                <button
-                  onClick={() => requestChatFocus()}
-                  className="mt-4 rounded-xl border border-sky-500/30 bg-sky-600/10 px-3 py-2 text-sm text-sky-200 transition-all duration-200 hover:bg-sky-600/20"
-                >
-                  开始输入
-                </button>
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <p className="text-2xl opacity-50">💬</p>
+                <p className="mt-2 text-sm text-slate-400">发送第一条消息开始对话</p>
               </div>
             ) : null}
 
@@ -308,7 +300,7 @@ export function ChatDrawer() {
               }
             }}
             placeholder={`给 ${chatTargetAgent || 'agent'} 发消息...`}
-            className="min-h-[92px] w-full resize-none rounded-2xl border border-slate-700/70 bg-slate-900/70 px-3 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 transition-all duration-200"
+            className="min-h-[64px] w-full resize-none rounded-2xl border border-slate-700/70 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 transition-all duration-200"
             disabled={chatLoading && !isStreaming}
           />
           <div className="mt-3 flex items-center justify-between gap-3">
