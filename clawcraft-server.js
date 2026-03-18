@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
-const FRONTEND_DIR = path.join(process.env.HOME || '/home/claw', 'clawcraft', 'frontend');
+const FRONTEND_DIR = process.env.CLAWCRAFT_FRONTEND_DIR
+  ? path.resolve(process.env.CLAWCRAFT_FRONTEND_DIR)
+  : path.join(__dirname, 'frontend', 'dist');
 const GATEWAY_PORT = 18789;
 const SERVE_PORT = 8080;
 
