@@ -12,8 +12,10 @@ import { DeveloperFilter } from '@/components/controls/DeveloperFilter';
 import { UserMenu } from '@/auth/UserMenu';
 import { ChatDrawer } from '@/components/hud/ChatDrawer';
 import { useSSE } from '@/hooks/use-sse';
+import { setTokenGetter } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 import type { EntityType } from '@/store/types';
+import { useLogto } from '@logto/react';
 
 // Lazy-loaded panels
 const WorldCanvas = lazy(() => import('@/components/world/WorldCanvas').then(m => ({ default: m.WorldCanvas })));
@@ -54,7 +56,22 @@ type PanelState =
   | { type: 'memory'; agentId: string };
 
 export default function App() {
-  useSSE('/clawcraft/events');
+  const { getAccessToken } = useLogto();
+
+  const getToken = useCallback(async () => {
+    try {
+      return await getAccessToken();
+    } catch {
+      return undefined;
+    }
+  }, [getAccessToken]);
+
+  useEffect(() => {
+    setTokenGetter(getToken);
+    return () => setTokenGetter(null);
+  }, [getToken]);
+
+  useSSE('/clawcraft/events', getToken);
 
   const agents = useWorldStore((s) => s.agents);
   const selectedEntityId = useWorldStore((s) => s.selectedEntityId);

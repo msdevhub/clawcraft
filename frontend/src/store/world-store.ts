@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { soundManager } from '@/audio/sound-manager';
+import { authFetch } from '@/lib/auth-fetch';
 import type {
   AgentState,
   ChannelStatus,
@@ -603,7 +604,7 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
     let streamingText = '';
 
     try {
-      const response = await fetch('/clawcraft/chat/send', {
+      const response = await authFetch('/clawcraft/chat/send', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -810,7 +811,7 @@ export const useWorldStore = create<WorldStore>((set, get) => ({
     set({ chatLoading: true, chatStreamingText: '', chatError: null, chatSessionKey: sessionKey });
 
     try {
-      const response = await fetch(`/clawcraft/chat/${encodeURIComponent(sessionKey)}/history`);
+      const response = await authFetch(`/clawcraft/chat/${encodeURIComponent(sessionKey)}/history`);
       if (!response.ok) {
         throw new Error(`Failed to load chat history (${response.status})`);
       }

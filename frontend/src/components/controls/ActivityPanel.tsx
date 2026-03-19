@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FileEditor } from '@/components/controls/FileEditor';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { authFetch } from '@/lib/auth-fetch';
 import type { ActivityEvent, ActivityStats, WorkspaceFileEntry } from '@/store/types';
 import { useWorldStore } from '@/store/world-store';
 
@@ -79,8 +80,8 @@ export function ActivityPanel({ open, onClose }: ActivityPanelProps) {
 
     try {
       const [activityResponse, filesResponse] = await Promise.all([
-        fetch(`/clawcraft/activity${query}`, { signal: controller.signal }),
-        fetch(`/clawcraft/workspace-files${fileQuery}`, { signal: controller.signal }),
+        authFetch(`/clawcraft/activity${query}`, { signal: controller.signal }),
+        authFetch(`/clawcraft/workspace-files${fileQuery}`, { signal: controller.signal }),
       ]);
 
       if (!activityResponse.ok) {

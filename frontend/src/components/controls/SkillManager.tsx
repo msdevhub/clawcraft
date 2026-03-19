@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { SkillsConfigForm } from '@/components/controls/settings-forms';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import { useConfig } from '@/hooks/use-config';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface SkillManagerProps {
@@ -44,7 +45,7 @@ export function SkillManager({ onClose, inline }: SkillManagerProps) {
   // Load installed skills
   const loadInstalled = useCallback(async () => {
     try {
-      const res = await fetch('/clawcraft/skills');
+      const res = await authFetch('/clawcraft/skills');
       const data = await res.json();
       if (data.ok) setInstalled(data.skills || []);
     } catch { /* ignore */ }
@@ -57,7 +58,7 @@ export function SkillManager({ onClose, inline }: SkillManagerProps) {
     if (!query.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch(`/clawcraft/skills?action=search&q=${encodeURIComponent(query)}`);
+      const res = await authFetch(`/clawcraft/skills?action=search&q=${encodeURIComponent(query)}`);
       const data = await res.json();
       if (data.ok) setSearchResults(data.skills || []);
       else addEvent({ id: `err-${Date.now()}`, type: 'error', message: `搜索失败: ${data.error}`, ts: Date.now() });
@@ -72,7 +73,7 @@ export function SkillManager({ onClose, inline }: SkillManagerProps) {
   const handleInstall = useCallback(async (slug: string) => {
     setActionLoading(slug);
     try {
-      const res = await fetch('/clawcraft/skills', {
+      const res = await authFetch('/clawcraft/skills', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'install', slug }),
@@ -96,7 +97,7 @@ export function SkillManager({ onClose, inline }: SkillManagerProps) {
     if (!confirm(`确定要拆除 ${slug}？`)) return;
     setActionLoading(slug);
     try {
-      const res = await fetch('/clawcraft/skills', {
+      const res = await authFetch('/clawcraft/skills', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'uninstall', slug }),
@@ -120,7 +121,7 @@ export function SkillManager({ onClose, inline }: SkillManagerProps) {
     setActionLoading(slug);
     setTestResults(prev => ({ ...prev, [slug]: { ok: true, message: '⏳ 测试中...' } }));
     try {
-      const res = await fetch('/clawcraft/action', {
+      const res = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'skill.test', params: { slug } }),
@@ -144,7 +145,7 @@ export function SkillManager({ onClose, inline }: SkillManagerProps) {
   const handleUpdateAll = useCallback(async () => {
     setActionLoading('__all__');
     try {
-      const res = await fetch('/clawcraft/skills', {
+      const res = await authFetch('/clawcraft/skills', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'update' }),

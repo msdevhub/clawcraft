@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Input } from '@/components/ui/input';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface EnvPanelProps {
@@ -45,7 +46,7 @@ export function EnvPanel({ onClose }: EnvPanelProps) {
     if (showSpinner) setLoading(true);
 
     try {
-      const response = await fetch('/clawcraft/config');
+      const response = await authFetch('/clawcraft/config');
       const data = await response.json();
       if (!data.ok) {
         setToast({ ok: false, message: data.error || '读取配置失败' });
@@ -84,7 +85,7 @@ export function EnvPanel({ onClose }: EnvPanelProps) {
     setToast(null);
 
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

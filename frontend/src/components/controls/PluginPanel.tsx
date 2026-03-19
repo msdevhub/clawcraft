@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface PluginPanelProps {
@@ -12,7 +13,7 @@ export function PluginPanel({ onClose }: PluginPanelProps) {
   const addEvent = useWorldStore((s) => s.addEvent);
 
   const loadConfig = useCallback(() => {
-    fetch('/clawcraft/config')
+    authFetch('/clawcraft/config')
       .then(r => r.json())
       .then(data => { if (data.ok) setConfig(data.config); })
       .finally(() => setLoading(false));
@@ -25,7 +26,7 @@ export function PluginPanel({ onClose }: PluginPanelProps) {
   const handleToggle = useCallback(async (pluginId: string, currentEnabled: boolean) => {
     setToggling(pluginId);
     try {
-      const res = await fetch('/clawcraft/action', {
+      const res = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'plugin.toggle', params: { pluginId, enabled: !currentEnabled } }),

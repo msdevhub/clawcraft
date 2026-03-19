@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { HoldButton } from '@/components/ui/HoldButton';
 import { Input } from '@/components/ui/input';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface ModelPanelProps {
@@ -76,7 +77,7 @@ export function ModelPanel({ onClose }: ModelPanelProps) {
   const loadConfig = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
     try {
-      const response = await fetch('/clawcraft/config');
+      const response = await authFetch('/clawcraft/config');
       const data = await response.json();
       if (data.ok) setConfig(data.config);
       else setActionResult({ ok: false, message: data.error || '读取模型配置失败' });
@@ -114,7 +115,7 @@ export function ModelPanel({ onClose }: ModelPanelProps) {
     setActionResult(null);
 
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, params }),
@@ -149,7 +150,7 @@ export function ModelPanel({ onClose }: ModelPanelProps) {
     setTestResults((prev) => ({ ...prev, [providerName]: { ok: true, message: '⏳ 连接测试中...' } }));
 
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'model.test', params: { provider: providerName } }),

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { authFetch } from '@/lib/auth-fetch';
 
 export function useConfig() {
   const [config, setConfig] = useState<any>(null);
@@ -12,7 +13,7 @@ export function useConfig() {
     setError(null);
 
     try {
-      const response = await fetch('/clawcraft/config');
+      const response = await authFetch('/clawcraft/config');
       const data = await response.json();
 
       if (!data.ok) {

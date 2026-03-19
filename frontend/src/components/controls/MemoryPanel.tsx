@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface MemoryPanelProps {
@@ -33,7 +34,7 @@ export function MemoryPanel({ agentId = 'main', onClose, inline }: MemoryPanelPr
     if (!query.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch('/clawcraft/memory', {
+      const res = await authFetch('/clawcraft/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'recall', agentId, query, limit: 10 }),
@@ -63,7 +64,7 @@ export function MemoryPanel({ agentId = 'main', onClose, inline }: MemoryPanelPr
     if (!storeText.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch('/clawcraft/memory', {
+      const res = await authFetch('/clawcraft/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -88,7 +89,7 @@ export function MemoryPanel({ agentId = 'main', onClose, inline }: MemoryPanelPr
   const handleForget = useCallback(async (memoryId: string) => {
     if (!confirm('确定要删除这条记忆？')) return;
     try {
-      const res = await fetch('/clawcraft/memory', {
+      const res = await authFetch('/clawcraft/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'forget', agentId, memoryId }),

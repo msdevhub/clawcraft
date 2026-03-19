@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { CanvasForm, DiscoveryForm, GatewayAdvancedForm, LoggingForm } from '@/components/controls/settings-forms';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import { Input } from '@/components/ui/input';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface GatewayPanelProps {
@@ -45,7 +46,7 @@ export function GatewayPanel({ onClose, onOpenBindings, onOpenSettings }: Gatewa
     if (showSpinner) setLoading(true);
 
     try {
-      const response = await fetch('/clawcraft/config');
+      const response = await authFetch('/clawcraft/config');
       const data = await response.json();
       if (data.ok) {
         setConfig(data.config);
@@ -80,7 +81,7 @@ export function GatewayPanel({ onClose, onOpenBindings, onOpenSettings }: Gatewa
     setActionResult(null);
 
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, params }),

@@ -3,6 +3,7 @@ import { HooksForm, MessagesForm, TtsForm } from '@/components/controls/settings
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import { HoldButton } from '@/components/ui/HoldButton';
 import { Input } from '@/components/ui/input';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface ChannelConfig {
@@ -129,7 +130,7 @@ export function ChannelManager({ onClose, inline }: ChannelManagerProps) {
     setError(null);
 
     try {
-      const res = await fetch('/clawcraft/config');
+      const res = await authFetch('/clawcraft/config');
       const data = await res.json();
       if (data.ok) {
         setConfig(data.config);
@@ -177,7 +178,7 @@ export function ChannelManager({ onClose, inline }: ChannelManagerProps) {
     setActionResult(null);
 
     try {
-      const res = await fetch('/clawcraft/action', {
+      const res = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, params }),
@@ -277,7 +278,7 @@ export function ChannelManager({ onClose, inline }: ChannelManagerProps) {
     }));
 
     try {
-      const res = await fetch('/clawcraft/action', {
+      const res = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'channel.test', params: { channelType } }),

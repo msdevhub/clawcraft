@@ -1,3 +1,4 @@
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 import type { Incident } from '@/store/types';
 
@@ -24,7 +25,7 @@ function timeAgo(ts: number): string {
 
 async function incidentAction(id: string, action: 'ack' | 'resolve' | 'mute') {
   try {
-    await fetch('/clawcraft/action', {
+    await authFetch('/clawcraft/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: `incident.${action}`, params: { id } }),

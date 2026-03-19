@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Input } from '@/components/ui/input';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface BindingsPanelProps {
@@ -73,7 +74,7 @@ export function BindingsPanel({ onClose }: BindingsPanelProps) {
     if (showSpinner) setLoading(true);
 
     try {
-      const response = await fetch('/clawcraft/config');
+      const response = await authFetch('/clawcraft/config');
       const data = await response.json();
       if (data.ok) {
         setConfig(data.config);
@@ -158,7 +159,7 @@ export function BindingsPanel({ onClose }: BindingsPanelProps) {
     setActionResult(null);
 
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

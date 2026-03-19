@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Application, Container, Graphics, Text, TextStyle, FederatedPointerEvent } from 'pixi.js';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 import { soundManager } from '@/audio/sound-manager';
 import type { AgentState, EntityType, SessionState, KingdomBuilding } from '@/store/types';
@@ -890,7 +891,7 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
 
   async function loadLayout() {
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'layout.load', params: {} }),
@@ -935,7 +936,7 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
 
   async function saveLayoutPosition(entityKey: string, x: number, y: number) {
     try {
-      await fetch('/clawcraft/action', {
+      await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -954,7 +955,7 @@ export function WorldCanvas({ onEntityClick }: WorldCanvasProps) {
       return { col, row };
     });
     try {
-      await fetch('/clawcraft/action', {
+      await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

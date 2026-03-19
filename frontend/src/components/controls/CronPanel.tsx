@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface CronPanelProps {
@@ -488,7 +489,7 @@ export function CronPanel({ onClose }: CronPanelProps) {
   }, []);
 
   const requestAction = useCallback(async (type: string, params: Record<string, unknown> = {}): Promise<ActionResponse> => {
-    const response = await fetch('/clawcraft/action', {
+    const response = await authFetch('/clawcraft/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type, params }),

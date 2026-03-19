@@ -10,6 +10,7 @@ import {
 import { CompactionForm, HeartbeatForm, SessionForm } from '@/components/controls/settings-forms';
 import { CollapsibleSection } from '@/components/ui/CollapsibleSection';
 import { Input } from '@/components/ui/input';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface AgentPanelProps {
@@ -164,7 +165,7 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
     if (showSpinner) setLoading(true);
 
     try {
-      const response = await fetch('/clawcraft/config');
+      const response = await authFetch('/clawcraft/config');
       const data = await response.json();
       if (data.ok) {
         setConfig(data.config);
@@ -222,7 +223,7 @@ export function AgentPanel({ agentId, onClose }: AgentPanelProps) {
     setActionResult(null);
 
     try {
-      const response = await fetch('/clawcraft/action', {
+      const response = await authFetch('/clawcraft/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, params }),

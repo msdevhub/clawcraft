@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { authFetch } from '@/lib/auth-fetch';
 import { useWorldStore } from '@/store/world-store';
 
 interface FileEditorProps {
@@ -30,7 +31,7 @@ export function FileEditor({ agentId, initialFile, onClose, inline }: FileEditor
 
   // Load file list
   useEffect(() => {
-    fetch(`/clawcraft/files?agentId=${encodeURIComponent(agentId)}`)
+    authFetch(`/clawcraft/files?agentId=${encodeURIComponent(agentId)}`)
       .then(r => r.json())
       .then(data => {
         if (data.ok) setFiles(data.files);
@@ -42,7 +43,7 @@ export function FileEditor({ agentId, initialFile, onClose, inline }: FileEditor
     if (!selectedFile) return;
     setLoading(true);
     setStatus('idle');
-    fetch(`/clawcraft/files?agentId=${encodeURIComponent(agentId)}&file=${encodeURIComponent(selectedFile)}`)
+    authFetch(`/clawcraft/files?agentId=${encodeURIComponent(agentId)}&file=${encodeURIComponent(selectedFile)}`)
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
@@ -62,7 +63,7 @@ export function FileEditor({ agentId, initialFile, onClose, inline }: FileEditor
     if (!selectedFile || content === originalContent) return;
     setSaving(true);
     try {
-      const res = await fetch('/clawcraft/files', {
+      const res = await authFetch('/clawcraft/files', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentId, file: selectedFile, content }),

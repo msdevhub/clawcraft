@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { authFetch } from '@/lib/auth-fetch';
 import type { ActivityStats } from '@/store/types';
 import { useWorldStore } from '@/store/world-store';
 
@@ -36,7 +37,7 @@ export function ResourceBar() {
       }
 
       try {
-        const response = await fetch('/clawcraft/activity?statsOnly=true', { signal: controller.signal });
+        const response = await authFetch('/clawcraft/activity?statsOnly=true', { signal: controller.signal });
         if (!response.ok) {
           throw new Error(`统计接口返回 ${response.status}`);
         }
@@ -116,7 +117,7 @@ export function ResourceBar() {
           onClick={() => {
             setStatsError(null);
             setStatsLoading(true);
-            void fetch('/clawcraft/activity?statsOnly=true')
+            void authFetch('/clawcraft/activity?statsOnly=true')
               .then(async (response) => {
                 if (!response.ok) {
                   throw new Error(`统计接口返回 ${response.status}`);

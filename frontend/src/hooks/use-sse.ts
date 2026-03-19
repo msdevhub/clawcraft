@@ -2,8 +2,20 @@ import { useEffect } from 'react';
 import type { ServerDelta, WorldState } from '@/store/types';
 import { useWorldStore } from '@/store/world-store';
 
-async function fetchSnapshot(signal: AbortSignal) {
-  const response = await fetch('/clawcraft/state', { signal });
+type TokenGetter = () => Promise<string | undefined>;
+
+async function fetchSnapshot(signal: AbortSignal, getToken: TokenGetter) {
+  const token = await getToken();
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
+
+  const response = await fetch('/clawcraft/state', {
+    signal,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch world snapshot (${response.status})`);
   }
@@ -11,7 +23,7 @@ async function fetchSnapshot(signal: AbortSignal) {
   return (await response.json()) as WorldState;
 }
 
-export function useSSE(url: string) {
+export function useSSE(url: string, getToken: TokenGetter) {
   useEffect(() => {
     let eventSource: EventSource | null = null;
     let reconnectTimer: number | null = null;
@@ -38,13 +50,22 @@ export function useSSE(url: string) {
       reconnectTimer = window.setTimeout(connect, delay);
     };
 
-    const connect = () => {
+    const connect = async () => {
       if (stopped) {
         return;
       }
 
       cleanupSource();
-      eventSource = new EventSource(url);
+
+      const token = await getToken();
+      if (!token) {
+        scheduleReconnect();
+        return;
+      }
+
+      const eventUrl = new URL(url, window.location.origin);
+      eventUrl.searchParams.set('token', token);
+      eventSource = new EventSource(eventUrl.toString());
 
       eventSource.addEventListener('connected', async (rawEvent) => {
         const payload = JSON.parse((rawEvent as MessageEvent<string>).data) as { serverInstanceId?: string };
@@ -58,7 +79,7 @@ export function useSSE(url: string) {
         snapshotController = new AbortController();
 
         try {
-          const snapshot = await fetchSnapshot(snapshotController.signal);
+          const snapshot = await fetchSnapshot(snapshotController.signal, getToken);
           useWorldStore.getState().setFullState(snapshot);
           useWorldStore.getState().setConnected(true, payload.serverInstanceId ?? snapshot.serverInstanceId ?? null, 0);
           reconnectAttempt = 0;
@@ -77,7 +98,7 @@ export function useSSE(url: string) {
       };
     };
 
-    connect();
+    void connect();
 
     return () => {
       stopped = true;
@@ -87,5 +108,5 @@ export function useSSE(url: string) {
         window.clearTimeout(reconnectTimer);
       }
     };
-  }, [url]);
+  }, [getToken, url]);
 }
