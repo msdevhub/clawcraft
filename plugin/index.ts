@@ -1659,6 +1659,73 @@ function buildOpenAiCompatibleModelsUrl(baseUrl: string): string {
 // HTTP Route Handlers — Existing (health, state, events, config, action)
 // ============================================================================
 
+// ── Logto token authentication ──────────────────────────────────────────────
+const LOGTO_USERINFO_URL = 'https://logto.dr.restry.cn/oidc/me';
+const tokenCache = new Map<string, { valid: boolean; userId?: string; expiry: number }>();
+const TOKEN_CACHE_TTL = 5 * 60 * 1000;    // 5 min for valid tokens
+const TOKEN_FAIL_TTL  = 60 * 1000;        // 1 min for invalid tokens
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of tokenCache) {
+    if (entry.expiry < now) tokenCache.delete(key);
+  }
+}, 10 * 60 * 1000);
+
+async function verifyToken(token: string): Promise<{ valid: boolean; userId?: string }> {
+  const cached = tokenCache.get(token);
+  if (cached && cached.expiry > Date.now()) {
+    return { valid: cached.valid, userId: cached.userId };
+  }
+  try {
+    const resp = await httpRequest(LOGTO_USERINFO_URL, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      timeoutMs: 5000,
+    });
+    if (resp.status === 200) {
+      const userInfo = JSON.parse(resp.body);
+      tokenCache.set(token, { valid: true, userId: userInfo.sub, expiry: Date.now() + TOKEN_CACHE_TTL });
+      return { valid: true, userId: userInfo.sub };
+    }
+  } catch (err) {
+    log.error?.(`[clawcraft] Token verification error: ${err}`);
+  }
+  tokenCache.set(token, { valid: false, expiry: Date.now() + TOKEN_FAIL_TTL });
+  return { valid: false };
+}
+
+function extractToken(req: IncomingMessage): string | null {
+  const authHeader = req.headers['authorization'];
+  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
+  try {
+    const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
+    return url.searchParams.get('token');
+  } catch { return null; }
+}
+
+/** Wrap a handler with Logto auth; CORS preflight passes through. */
+function withAuth(handler: (req: IncomingMessage, res: ServerResponse) => boolean): (req: IncomingMessage, res: ServerResponse) => boolean {
+  return (req: IncomingMessage, res: ServerResponse): boolean => {
+    if (req.method === 'OPTIONS') return handler(req, res); // let handler do CORS
+    const token = extractToken(req);
+    if (!token) {
+      jsonResponse(res, 401, { ok: false, error: 'Authentication required' });
+      return true;
+    }
+    verifyToken(token).then(result => {
+      if (!result.valid) {
+        jsonResponse(res, 401, { ok: false, error: 'Invalid or expired token' });
+        return;
+      }
+      handler(req, res);
+    }).catch(() => {
+      jsonResponse(res, 500, { ok: false, error: 'Auth verification failed' });
+    });
+    return true;
+  };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function handleHealth(_req: IncomingMessage, res: ServerResponse): boolean {
   const state = getWorldState();
   jsonResponse(res, 200, {
@@ -3260,16 +3327,16 @@ const clawcraftPlugin = {
 
     // ── HTTP Routes ──
     api.registerHttpRoute({ path: "/clawcraft/health",  auth: "plugin", handler: handleHealth,  match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/state",   auth: "plugin", handler: handleState,   match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/events",  auth: "plugin", handler: handleEvents,  match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/chat",    auth: "plugin", handler: handleChat,    match: "prefix" });
-    api.registerHttpRoute({ path: "/clawcraft/config",  auth: "plugin", handler: handleConfig,  match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/action",  auth: "plugin", handler: handleAction,  match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/files",   auth: "plugin", handler: handleFiles,   match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/memory",  auth: "plugin", handler: handleMemory,  match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/skills",  auth: "plugin", handler: handleSkills,  match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/activity", auth: "plugin", handler: handleActivity, match: "exact" });
-    api.registerHttpRoute({ path: "/clawcraft/workspace-files", auth: "plugin", handler: handleWorkspaceFiles, match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/state",   auth: "plugin", handler: withAuth(handleState),   match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/events",  auth: "plugin", handler: withAuth(handleEvents),  match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/chat",    auth: "plugin", handler: withAuth(handleChat),    match: "prefix" });
+    api.registerHttpRoute({ path: "/clawcraft/config",  auth: "plugin", handler: withAuth(handleConfig),  match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/action",  auth: "plugin", handler: withAuth(handleAction),  match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/files",   auth: "plugin", handler: withAuth(handleFiles),   match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/memory",  auth: "plugin", handler: withAuth(handleMemory),  match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/skills",  auth: "plugin", handler: withAuth(handleSkills),  match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/activity", auth: "plugin", handler: withAuth(handleActivity), match: "exact" });
+    api.registerHttpRoute({ path: "/clawcraft/workspace-files", auth: "plugin", handler: withAuth(handleWorkspaceFiles), match: "exact" });
 
     runtimeApi = api;
     log.info?.(`[clawcraft] Plugin registered — 11 routes, 9 hooks 🏰 v${VERSION}`);
