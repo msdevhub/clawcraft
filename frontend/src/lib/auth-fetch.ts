@@ -1,19 +1,23 @@
 let tokenGetter: (() => Promise<string | undefined>) | null = null;
 
+// Resolves when tokenGetter is first set — lets child effects await readiness
+let tokenGetterReady: Promise<void>;
+let resolveTokenGetterReady: () => void;
+tokenGetterReady = new Promise<void>((r) => { resolveTokenGetterReady = r; });
+
 export function setTokenGetter(fn: (() => Promise<string | undefined>) | null) {
   tokenGetter = fn;
+  if (fn) resolveTokenGetterReady();
 }
 
 export async function getAuthToken(): Promise<string> {
-  // Retry up to 3 times with delay — Logto SDK may still be initializing
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const token = tokenGetter ? await tokenGetter() : undefined;
-    if (token) return token;
-    if (attempt < 2) {
-      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-    }
+  // Wait for setTokenGetter to be called (handles React parent/child effect ordering)
+  await tokenGetterReady;
+  const token = tokenGetter ? await tokenGetter() : undefined;
+  if (!token) {
+    throw new Error('Not authenticated');
   }
-  throw new Error('Not authenticated');
+  return token;
 }
 
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {

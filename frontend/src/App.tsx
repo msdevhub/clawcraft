@@ -66,10 +66,14 @@ export default function App() {
     }
   }, [getAccessToken]);
 
+  // Synchronously set tokenGetter during render so child effects can use it
+  // immediately. React fires child useEffects BEFORE parent useEffects, so
+  // deferring this to a useEffect causes a race condition where WorldCanvas
+  // calls authFetch before tokenGetter is set.
+  setTokenGetter(getToken);
   useEffect(() => {
-    setTokenGetter(getToken);
     return () => setTokenGetter(null);
-  }, [getToken]);
+  }, []);
 
   useSSE('/clawcraft/events', getToken);
 
