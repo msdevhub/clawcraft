@@ -5,11 +5,15 @@ export function setTokenGetter(fn: (() => Promise<string | undefined>) | null) {
 }
 
 export async function getAuthToken(): Promise<string> {
-  const token = tokenGetter ? await tokenGetter() : undefined;
-  if (!token) {
-    throw new Error('Not authenticated');
+  // Retry up to 3 times with delay — Logto SDK may still be initializing
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const token = tokenGetter ? await tokenGetter() : undefined;
+    if (token) return token;
+    if (attempt < 2) {
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
   }
-  return token;
+  throw new Error('Not authenticated');
 }
 
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {

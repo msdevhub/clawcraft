@@ -11,7 +11,7 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: 4010,
     allowedHosts: ['craft.dev.dora.restry.cn', 'dev.dora.restry.cn'],
     proxy: {
       '/clawcraft': {
